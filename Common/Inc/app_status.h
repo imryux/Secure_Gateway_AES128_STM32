@@ -1,0 +1,32 @@
+/**
+ * @file    app_status.h
+ * @brief   Common application status codes.
+ * @version 1.0
+ * @date    2026-11-06
+ */
+
+#ifndef APP_STATUS_H
+#define APP_STATUS_H
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+typedef enum
+{
+    APP_STATUS_OK = 0,
+    APP_STATUS_INVALID_ARG,
+    APP_STATUS_BUSY,
+    APP_STATUS_TIMEOUT,
+    APP_STATUS_IO_ERROR,
+    APP_STATUS_NO_MEMORY,
+    APP_STATUS_NOT_READY,
+    APP_STATUS_CRYPTO_ERROR
+} app_status_t;
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* APP_STATUS_H */
