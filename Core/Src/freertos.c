@@ -25,7 +25,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "bsp_gpio.h"
+#include "log_service.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -140,11 +141,19 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	uint32_t heartbeat_count = 0U;
+
+	for (;;)
+	{
+	    bsp_gpio_led_toggle();
+	    heartbeat_count++;
+
+	    (void)log_service_print(
+	        "Heartbeat #%lu | System Alive\r\n",
+	        (unsigned long)heartbeat_count);
+
+	    osDelay(1000);
+	}
   /* USER CODE END StartDefaultTask */
 }
 
