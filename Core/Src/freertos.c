@@ -30,6 +30,7 @@
 #include "log_service.h"
 #include <stdbool.h>
 #include "bsp_w5500.h"
+#include "net_service.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -150,21 +151,31 @@ void StartDefaultTask(void const * argument)
 	}
 
 	TickType_t last_wake_time = xTaskGetTickCount();
-	const TickType_t period_ticks = pdMS_TO_TICKS(1000U);
+	const TickType_t period_ticks = pdMS_TO_TICKS(50U);
+	uint32_t loop_ticks = 0U;
 
 	/* Infinite loop */
 	for (;;)
 	{
-	    bool link_a = false;
-	    bool link_b = false;
-	    (void)bsp_w5500_is_link_up(BSP_W5500_ID_A, &link_a);
-	    (void)bsp_w5500_is_link_up(BSP_W5500_ID_B, &link_b);
+	    (void)net_service_service_chip(BSP_W5500_ID_A);
+	    (void)net_service_service_chip(BSP_W5500_ID_B);
 
-	    bsp_gpio_led_toggle();
-	    (void)log_service_print(
-	        "PHY Status | W5500_A (SPI1): %s | W5500_B (SPI2): %s\r\n",
-	        (link_a == true) ? "UP" : "DOWN",
-	        (link_b == true) ? "UP" : "DOWN");
+	    loop_ticks++;
+	    if (loop_ticks >= 40U)
+	    {
+	        loop_ticks = 0U;
+	        bsp_gpio_led_toggle();
+
+	        const uint32_t exti_a = net_service_fetch_exti_count(BSP_W5500_ID_A);
+	        const uint32_t exti_b = net_service_fetch_exti_count(BSP_W5500_ID_B);
+	        if ((exti_a > 0U) || (exti_b > 0U))
+	        {
+	            (void)log_service_print(
+	                "EXTI Triggered | W5500_A (PA2)=%lu | W5500_B (PB10)=%lu\r\n",
+	                (unsigned long)exti_a,
+	                (unsigned long)exti_b);
+	        }
+	    }
 
 	    vTaskDelayUntil(&last_wake_time, period_ticks);
 	}

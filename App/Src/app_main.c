@@ -16,6 +16,7 @@
 #include "bsp_gpio.h"
 #include "bsp_w5500.h"
 #include "log_service.h"
+#include "net_service.h"
 
 app_status_t app_main_init(void)
 {
@@ -59,5 +60,11 @@ app_status_t app_main_init(void)
         return APP_STATUS_IO_ERROR;
     }
 
+    status = net_service_init();
+    if (status != APP_STATUS_OK)
+    {
+        (void)log_service_print("ERROR: net_service_init failed (code=%d)\r\n", (int)status);
+        return status;
+    }
     return APP_STATUS_OK;
 }
