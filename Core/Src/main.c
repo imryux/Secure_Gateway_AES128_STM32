@@ -26,7 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "app_main.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,9 +96,21 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  if (app_main_init() != APP_STATUS_OK)
+  /* Quick visual boot indicator: 3 fast LED blinks before RTOS starts */
+  for (uint32_t i = 0U; i < 6U; i++)
   {
-      Error_Handler();
+      HAL_GPIO_TogglePin(LED_HEARTBEAT_GPIO_Port, LED_HEARTBEAT_Pin);
+      HAL_Delay(100);
+  }
+
+  /* Raw UART boot test (no FreeRTOS dependency) */
+  {
+      const char boot_msg[] = "[BOOT] MCU alive - UART OK\r\n";
+      (void)HAL_UART_Transmit(
+          &huart1,
+          (const uint8_t *)boot_msg,
+          sizeof(boot_msg) - 1U,
+          100U);
   }
   /* USER CODE END 2 */
 

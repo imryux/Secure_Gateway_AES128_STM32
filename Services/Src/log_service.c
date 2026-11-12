@@ -38,9 +38,9 @@ static char s_log_format_buffer[LOG_BUFFER_MAX_SIZE];
 app_status_t log_service_init(void)
 {
     /* Enable ARM Cortex-M3 DWT Cycle Counter for microsecond profiling */
-    //CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    //DWT->CYCCNT = 0U;
-    //DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0U;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
     /* RTOS-06 & RTOS-09: Use static mutex with priority inheritance */
     s_log_mutex_handle = xSemaphoreCreateMutexStatic(&s_log_mutex_buffer);

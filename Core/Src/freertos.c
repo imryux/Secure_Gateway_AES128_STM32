@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_main.h"
 #include "bsp_gpio.h"
 #include "log_service.h"
 /* USER CODE END Includes */
@@ -122,7 +123,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -141,6 +142,11 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+	/* POST: Initialize BSP, services, and verify W5500 hardware.
+	 * Non-fatal: errors are already logged inside app_main_init().
+	 * Allow heartbeat loop to run regardless so we can debug via UART. */
+	(void)app_main_init();
+
 	uint32_t heartbeat_count = 0U;
 
 	for (;;)
