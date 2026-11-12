@@ -1,277 +1,330 @@
 /**
  * @file    bsp_w5500.c
- * @brief   W5500 dual-chip hardware driver implementation.
- * @details Provides board-support hardware abstraction for dual WIZnet W5500
- *          Ethernet controllers, including FreeRTOS-safe bus arbitration via
- *          static mutex, hardware reset sequencing, CS line assertion, and
- *          common register access.
+ * @brief   Dual W5500 Ethernet controller port abstraction implementation.
  * @version 1.0
- * @date    2026-11-08
+ * @date    2026-11-12
  */
 
-/* ========================================================================== */
-/*                             INCLUDE DIRECTORIES                            */
-/* ========================================================================== */
-
-/* Own header */
 #include "bsp_w5500.h"
 
-/* Standard C headers */
 #include <stdbool.h>
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
-/* RTOS headers */
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "task.h"
+#include "stm32f1xx_hal.h"
+#include "wizchip_conf.h"
 
-/* Project & BSP headers */
-#include "bsp_gpio.h"
 #include "bsp_spi.h"
 
-/* ========================================================================== */
-/*                           PREPROCESSOR DEFINITIONS                         */
-/* ========================================================================== */
+/** @brief Hardware reset active pulse duration in milliseconds (min 500us per datasheet) */
+#define BSP_W5500_RST_PULSE_MS        (2U)
 
-/** @brief Default timeout in milliseconds when waiting to acquire SPI bus mutex. */
-#define W5500_MUTEX_TIMEOUT_DEFAULT_MS  (100U)
+/** @brief Post-reset stabilization delay for W5500 internal PLL lock in milliseconds */
+#define BSP_W5500_PLL_LOCK_MS         (50U)
 
-/** @brief Active-low duration in milliseconds to hold hardware reset line. */
-#define W5500_RST_HOLD_DELAY_MS         (10U)
+/** @brief Default mutex acquisition timeout in milliseconds for internal W5500 operations */
+#define BSP_W5500_DEFAULT_LOCK_MS     (100U)
 
-/** @brief Settle delay in milliseconds required after reset release for internal PLL. */
-#define W5500_RST_SETTLE_DELAY_MS       (50U)
+/** @brief Dummy byte clocked out on MOSI during SPI read operations */
+#define BSP_W5500_DUMMY_BYTE          (0xFFU)
 
-/**
- * @brief Common Register Block Read Control Byte.
- * @note  Frame layout: BSB[4:0] = 00000b (Common Block), R/W = 0 (Read), OM[1:0] = 00 (VDM).
- */
-#define W5500_CTRL_COMMON_READ          (0x00U)
+/** @brief Total number of hardware sockets available per W5500 chip */
+#define BSP_W5500_SOCKET_COUNT        (8U)
 
-/** @brief Bitmask for PHY link status bit (bit 0: 1 = Link Up, 0 = Link Down) in PHYCFGR. */
-#define W5500_PHYCFGR_LNK_BIT_MASK      (0x01U)
+/** @brief TX/RX buffer allocation size in KB per socket (8 * 2KB = 16KB total) */
+#define BSP_W5500_SOCKET_MEM_KB       (2U)
 
-/* ========================================================================== */
-/*                              STATIC VARIABLES                              */
-/* ========================================================================== */
-
-/**
- * @brief  Static buffer for the shared WIZnet bus arbitration mutex.
- * @note   Complies with RTOS-06 & RTOS-09 to prohibit runtime dynamic allocation.
- */
+/* RTOS-06 & NAM-04: Static mutex serializing WIZnet ioLibrary global state */
+/** @brief Static control block for the WIZnet ioLibrary access mutex */
 static StaticSemaphore_t s_wiz_mutex_buffer;
 
-/** @brief Handle to the statically allocated WIZnet access mutex. */
+/** @brief Mutex handle ensuring thread-safe multiplexing across dual W5500 instances */
 static SemaphoreHandle_t s_wiz_mutex_handle = NULL;
 
-/* ========================================================================== */
-/*                              PUBLIC FUNCTIONS                              */
-/* ========================================================================== */
+/** @brief Tracks which W5500 module currently holds the ioLibrary context */
+static bsp_w5500_id_t s_active_chip = BSP_W5500_ID_A;
 
 /**
- * @brief  Initialize W5500 hardware peripheral lines and synchronization mutex.
- * @details Creates a static FreeRTOS mutex to arbitrate multi-task access,
- *          deasserts CS lines, and drives a simultaneous hardware reset pulse
- *          to both W5500 controllers.
- * @return Operation status:
- *         - @ref APP_STATUS_OK: Successfully initialized hardware lines and mutex.
- *         - @ref APP_STATUS_NO_MEMORY: Mutex allocation failed.
+ * @brief  Maps a logical W5500 chip ID to its underlying SPI bus.
+ * @param  chip_id Logical W5500 module identifier.
+ * @return Corresponding SPI bus identifier (BSP_SPI_BUS_1 or BSP_SPI_BUS_2).
+ */
+static bsp_spi_bus_t bsp_w5500_get_spi_bus(bsp_w5500_id_t chip_id)
+{
+    if (chip_id == BSP_W5500_ID_B)
+    {
+        return BSP_SPI_BUS_2;
+    }
+
+    return BSP_SPI_BUS_1;
+}
+
+/**
+ * @brief  Context-aware blocking delay safe for both pre-scheduler and RTOS execution.
+ * @param  delay_ms Delay duration in milliseconds.
+ */
+static void bsp_w5500_delay_ms(uint32_t delay_ms)
+{
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+    {
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+    else
+    {
+        HAL_Delay(delay_ms);
+    }
+}
+
+/**
+ * @brief  ioLibrary Callback: Asserts Chip Select (CS low) for the active W5500.
+ */
+static void bsp_w5500_cb_cs_select(void)
+{
+    (void)bsp_gpio_w5500_cs_write(s_active_chip, true);
+}
+
+/**
+ * @brief  ioLibrary Callback: Deasserts Chip Select (CS high) for the active W5500.
+ */
+static void bsp_w5500_cb_cs_deselect(void)
+{
+    (void)bsp_gpio_w5500_cs_write(s_active_chip, false);
+}
+
+/**
+ * @brief  ioLibrary Callback: Reads a single byte from the active W5500 SPI bus.
+ * @return Byte received from the W5500 controller.
+ */
+static uint8_t bsp_w5500_cb_spi_read_byte(void)
+{
+    uint8_t rx_byte = 0U;
+    const bsp_spi_bus_t bus_id = bsp_w5500_get_spi_bus(s_active_chip);
+    (void)bsp_spi_transfer_byte(bus_id, BSP_W5500_DUMMY_BYTE, &rx_byte);
+    return rx_byte;
+}
+
+/**
+ * @brief  ioLibrary Callback: Writes a single byte to the active W5500 SPI bus.
+ * @param  tx_byte Byte to transmit to the W5500 controller.
+ */
+static void bsp_w5500_cb_spi_write_byte(uint8_t tx_byte)
+{
+    uint8_t dummy_rx = 0U;
+    const bsp_spi_bus_t bus_id = bsp_w5500_get_spi_bus(s_active_chip);
+    (void)bsp_spi_transfer_byte(bus_id, tx_byte, &dummy_rx);
+}
+
+/**
+ * @brief  ioLibrary Callback: Reads a burst of bytes from the active W5500 SPI bus.
+ * @param  p_buf Pointer to destination buffer.
+ * @param  len   Number of bytes to read.
+ */
+static void bsp_w5500_cb_spi_read_burst(uint8_t *p_buf, uint16_t len)
+{
+    const bsp_spi_bus_t bus_id = bsp_w5500_get_spi_bus(s_active_chip);
+    (void)bsp_spi_read_burst(bus_id, p_buf, (size_t)len);
+}
+
+/**
+ * @brief  ioLibrary Callback: Writes a burst of bytes to the active W5500 SPI bus.
+ * @param  p_buf Pointer to source data buffer.
+ * @param  len   Number of bytes to write.
+ */
+static void bsp_w5500_cb_spi_write_burst(uint8_t *p_buf, uint16_t len)
+{
+    const bsp_spi_bus_t bus_id = bsp_w5500_get_spi_bus(s_active_chip);
+    (void)bsp_spi_write_burst(bus_id, p_buf, (size_t)len);
+}
+
+/**
+ * @brief  Initializes SPI buses, RTOS mutex, ioLibrary callbacks, and both W5500 chips.
+ * @return APP_STATUS_OK on success, or an error status if initialization fails.
  */
 app_status_t bsp_w5500_init(void)
 {
-    /* RTOS-06: Static creation of the mutual exclusion semaphore */
+    app_status_t status = bsp_spi_init();
+    if (status != APP_STATUS_OK)
+    {
+        return status;
+    }
+
+    /* RTOS-06 & RTOS-09: Static mutex with priority inheritance */
     s_wiz_mutex_handle = xSemaphoreCreateMutexStatic(&s_wiz_mutex_buffer);
     if (s_wiz_mutex_handle == NULL)
     {
         return APP_STATUS_NO_MEMORY;
     }
 
-    /* Initialize CS lines to inactive (deasserted) state */
-    (void)bsp_gpio_w5500_cs_write(BSP_W5500_ID_A, false);
-    (void)bsp_gpio_w5500_cs_write(BSP_W5500_ID_B, false);
+    /* Register multiplexed SPI and CS callbacks into WIZnet ioLibrary */
+    reg_wizchip_cs_cbfunc(bsp_w5500_cb_cs_select, bsp_w5500_cb_cs_deselect);
+    reg_wizchip_spi_cbfunc(bsp_w5500_cb_spi_read_byte, bsp_w5500_cb_spi_write_byte);
+    reg_wizchip_spiburst_cbfunc(bsp_w5500_cb_spi_read_burst, bsp_w5500_cb_spi_write_burst);
 
-    /* Assert reset line on both W5500 modules simultaneously */
-    (void)bsp_gpio_w5500_rst_write(BSP_W5500_ID_A, true);
-    (void)bsp_gpio_w5500_rst_write(BSP_W5500_ID_B, true);
-    HAL_Delay(W5500_RST_HOLD_DELAY_MS);
+    /* Hardware reset both W5500 modules and allocate 2KB TX/RX per socket (total 16KB/16KB) */
+    uint8_t socket_mem_size[BSP_W5500_SOCKET_COUNT] =
+    {
+        BSP_W5500_SOCKET_MEM_KB, BSP_W5500_SOCKET_MEM_KB,
+        BSP_W5500_SOCKET_MEM_KB, BSP_W5500_SOCKET_MEM_KB,
+        BSP_W5500_SOCKET_MEM_KB, BSP_W5500_SOCKET_MEM_KB,
+        BSP_W5500_SOCKET_MEM_KB, BSP_W5500_SOCKET_MEM_KB
+    };
 
-    /* Deassert reset line and wait for internal oscillator/PLL to stabilize */
-    (void)bsp_gpio_w5500_rst_write(BSP_W5500_ID_A, false);
-    (void)bsp_gpio_w5500_rst_write(BSP_W5500_ID_B, false);
-    HAL_Delay(W5500_RST_SETTLE_DELAY_MS);
+    for (uint32_t id = 0U; id < (uint32_t)BSP_W5500_COUNT; id++)
+    {
+        const bsp_w5500_id_t chip_id = (bsp_w5500_id_t)id;
+
+        /* Reset hardware and wait for internal clock stabilization */
+        status = bsp_w5500_hw_reset(chip_id);
+        if (status != APP_STATUS_OK)
+        {
+            return status;
+        }
+
+        /* Acquire exclusive ioLibrary access to configure socket buffer sizes */
+        status = bsp_w5500_lock(chip_id, BSP_W5500_DEFAULT_LOCK_MS);
+        if (status != APP_STATUS_OK)
+        {
+            return status;
+        }
+
+        const int8_t wiz_ret = wizchip_init(socket_mem_size, socket_mem_size);
+        bsp_w5500_unlock();
+
+        if (wiz_ret != 0)
+        {
+            return APP_STATUS_IO_ERROR;
+        }
+    }
 
     return APP_STATUS_OK;
 }
 
 /**
- * @brief  Acquire exclusive bus access and assert Chip Select for a W5500 module.
- * @details Takes the shared FreeRTOS mutex (when scheduler is active) within the
- *          specified timeout and drives the active-low CS line low.
- * @param  chip_id    Target W5500 chip identifier (@ref bsp_w5500_id_t).
- * @param  timeout_ms Maximum time to wait for bus mutex in milliseconds.
- * @return Operation status:
- *         - @ref APP_STATUS_OK: Bus acquired and CS asserted.
- *         - @ref APP_STATUS_INVALID_ARG: chip_id exceeds valid range.
- *         - @ref APP_STATUS_BUSY: Mutex could not be acquired before timeout.
+ * @brief  Acquires exclusive access to WIZnet ioLibrary and routes callbacks to chip_id.
+ * @note   Must be paired with bsp_w5500_unlock() after completing ioLibrary calls.
+ * @param  chip_id    Target W5500 module identifier.
+ * @param  timeout_ms Maximum time in milliseconds to wait for the mutex.
+ * @return APP_STATUS_OK on success, APP_STATUS_BUSY on timeout, or error status.
  */
-app_status_t bsp_w5500_acquire(
+app_status_t bsp_w5500_lock(
     bsp_w5500_id_t chip_id,
     uint32_t timeout_ms)
 {
-    /* SAF-03: Validate input argument bounds */
     if (chip_id >= BSP_W5500_COUNT)
     {
         return APP_STATUS_INVALID_ARG;
     }
 
-    /* Enforce mutual exclusion only when FreeRTOS scheduler is active */
+    if (s_wiz_mutex_handle == NULL)
+    {
+        return APP_STATUS_NOT_READY;
+    }
+
+    /* Take mutex only when FreeRTOS scheduler is active */
     if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
     {
-        if (s_wiz_mutex_handle != NULL)
+        if (xSemaphoreTake(s_wiz_mutex_handle, pdMS_TO_TICKS(timeout_ms)) != pdTRUE)
         {
-            if (xSemaphoreTake(
-                    s_wiz_mutex_handle,
-                    pdMS_TO_TICKS(timeout_ms)) != pdTRUE)
-            {
-                return APP_STATUS_BUSY;
-            }
+            return APP_STATUS_BUSY;
         }
     }
 
-    /* Assert CS (active-low) for target chip */
-    return bsp_gpio_w5500_cs_write(chip_id, true);
+    /* Switch active SPI bus and CS pin to the locked chip */
+    s_active_chip = chip_id;
+    return APP_STATUS_OK;
 }
 
 /**
- * @brief  Release Chip Select and surrender exclusive bus access.
- * @details Drives the CS line inactive (high) and releases the FreeRTOS mutex.
- * @param  chip_id Target W5500 chip identifier (@ref bsp_w5500_id_t).
- * @return Operation status:
- *         - @ref APP_STATUS_OK: Bus released successfully.
- *         - @ref APP_STATUS_INVALID_ARG: chip_id exceeds valid range.
+ * @brief  Releases exclusive access to the WIZnet ioLibrary mutex.
  */
-app_status_t bsp_w5500_release(bsp_w5500_id_t chip_id)
+void bsp_w5500_unlock(void)
 {
-    /* SAF-03: Validate input argument bounds */
+    if ((xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) && (s_wiz_mutex_handle != NULL))
+    {
+        (void)xSemaphoreGive(s_wiz_mutex_handle);
+    }
+}
+
+/**
+ * @brief  Executes a hardware reset sequence on the specified W5500 controller.
+ * @param  chip_id Target W5500 module identifier.
+ * @return APP_STATUS_OK on success, or APP_STATUS_INVALID_ARG if chip_id is out of range.
+ */
+app_status_t bsp_w5500_hw_reset(bsp_w5500_id_t chip_id)
+{
     if (chip_id >= BSP_W5500_COUNT)
     {
         return APP_STATUS_INVALID_ARG;
     }
 
-    /* Deassert CS line (return to inactive state) */
+    /* Ensure CS is deasserted, assert RST, and hold for minimum pulse width */
     (void)bsp_gpio_w5500_cs_write(chip_id, false);
+    (void)bsp_gpio_w5500_rst_write(chip_id, true);
+    bsp_w5500_delay_ms(BSP_W5500_RST_PULSE_MS);
 
-    /* Release mutex back to other waiting tasks */
-    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
-    {
-        if (s_wiz_mutex_handle != NULL)
-        {
-            (void)xSemaphoreGive(s_wiz_mutex_handle);
-        }
-    }
+    /* Release RST and wait for internal PLL to lock before SPI communication */
+    (void)bsp_gpio_w5500_rst_write(chip_id, false);
+    bsp_w5500_delay_ms(BSP_W5500_PLL_LOCK_MS);
 
     return APP_STATUS_OK;
 }
 
 /**
- * @brief  Read an 8-bit register from the W5500 Common Register Block.
- * @details Handles bus locking, 3-byte SPI header transmission ([Address High,
- *          Address Low, Control Byte]), data reception, and bus release.
- * @param  chip_id  Target W5500 chip identifier.
- * @param  reg_addr 16-bit register offset within Common Register Block.
- * @param  p_value  Pointer to destination memory for the read byte.
- * @return Operation status:
- *         - @ref APP_STATUS_OK: Register read successfully.
- *         - @ref APP_STATUS_INVALID_ARG: p_value is NULL or chip_id is invalid.
- *         - @ref APP_STATUS_BUSY: Failed to acquire bus lock within timeout.
- *         - @ref APP_STATUS_IO_ERROR: SPI transfer failure.
- */
-app_status_t bsp_w5500_read_common_reg(
-    bsp_w5500_id_t chip_id,
-    uint16_t reg_addr,
-    uint8_t *p_value)
-{
-    /* SAF-02: Pointer validation */
-    if (p_value == NULL)
-    {
-        return APP_STATUS_INVALID_ARG;
-    }
-
-    /* Acquire bus mutex and assert chip select */
-    app_status_t status = bsp_w5500_acquire(
-        chip_id,
-        W5500_MUTEX_TIMEOUT_DEFAULT_MS);
-    if (status != APP_STATUS_OK)
-    {
-        return status;
-    }
-
-    /* Prepare 3-byte command frame: Address (MSB), Address (LSB), Control Byte */
-    const uint8_t header[3] =
-    {
-        (uint8_t)(reg_addr >> 8U),
-        (uint8_t)(reg_addr & 0x00FFU),
-        W5500_CTRL_COMMON_READ
-    };
-
-    /* Transmit 3-byte header */
-    status = bsp_spi_transfer_buffer(chip_id, header, NULL, sizeof(header));
-    if (status == APP_STATUS_OK)
-    {
-        /* Clock out dummy byte (0x00) to read received data */
-        status = bsp_spi_transfer_byte(chip_id, 0x00U, p_value);
-    }
-
-    /* Always release bus and CS regardless of transfer status */
-    (void)bsp_w5500_release(chip_id);
-    return status;
-}
-
-/**
- * @brief  Read the hardware chip version register (VERSIONR).
- * @param  chip_id   Target W5500 chip identifier.
- * @param  p_version Pointer to store the version value (expected: 0x04 for W5500).
- * @return Operation status forwarded from @ref bsp_w5500_read_common_reg.
+ * @brief  Reads the chip version register (VERSIONR) from the specified W5500.
+ * @param  chip_id   Target W5500 module identifier.
+ * @param  p_version Pointer to store the read version value (expected 0x04 for W5500).
+ * @return APP_STATUS_OK on success, or an error status.
  */
 app_status_t bsp_w5500_read_version(
     bsp_w5500_id_t chip_id,
     uint8_t *p_version)
 {
-    return bsp_w5500_read_common_reg(chip_id, W5500_REG_VERSIONR, p_version);
-}
-
-/**
- * @brief  Query the PHY configuration register to evaluate Ethernet link status.
- * @param  chip_id       Target W5500 chip identifier.
- * @param  p_is_link_up  Pointer to boolean flag (true = Link Up, false = Link Down).
- * @return Operation status:
- *         - @ref APP_STATUS_OK: Successfully retrieved link status.
- *         - @ref APP_STATUS_INVALID_ARG: p_is_link_up is NULL.
- *         - Other errors forwarded from @ref bsp_w5500_read_common_reg.
- */
-app_status_t bsp_w5500_read_phy_link(
-    bsp_w5500_id_t chip_id,
-    bool *p_is_link_up)
-{
-    /* SAF-02: Validate nullable output pointer */
-    if (p_is_link_up == NULL)
+    if ((chip_id >= BSP_W5500_COUNT) || (p_version == NULL))
     {
         return APP_STATUS_INVALID_ARG;
     }
 
-    uint8_t phy_cfg = 0U;
-    const app_status_t status = bsp_w5500_read_common_reg(
-        chip_id,
-        W5500_REG_PHYCFGR,
-        &phy_cfg);
-
+    app_status_t status = bsp_w5500_lock(chip_id, BSP_W5500_DEFAULT_LOCK_MS);
     if (status != APP_STATUS_OK)
     {
         return status;
     }
 
-    /* Extract Link Status bit */
-    *p_is_link_up = ((phy_cfg & W5500_PHYCFGR_LNK_BIT_MASK) != 0U);
+    /* Read W5500 VERSIONR (0x0039) via ioLibrary macro */
+    *p_version = getVERSIONR();
+    bsp_w5500_unlock();
+
+    return APP_STATUS_OK;
+}
+
+/**
+ * @brief  Checks the physical Ethernet link status of the specified W5500.
+ * @param  chip_id   Target W5500 module identifier.
+ * @param  p_link_up Pointer to store link state (true if link is up, false otherwise).
+ * @return APP_STATUS_OK on success, or an error status.
+ */
+app_status_t bsp_w5500_is_link_up(
+    bsp_w5500_id_t chip_id,
+    bool *p_link_up)
+{
+    if ((chip_id >= BSP_W5500_COUNT) || (p_link_up == NULL))
+    {
+        return APP_STATUS_INVALID_ARG;
+    }
+
+    app_status_t status = bsp_w5500_lock(chip_id, BSP_W5500_DEFAULT_LOCK_MS);
+    if (status != APP_STATUS_OK)
+    {
+        return status;
+    }
+
+    /* Read W5500 PHYCFGR (0x002E) and mask LNK bit (0x01) */
+    const uint8_t phy_cfg = getPHYCFGR();
+    bsp_w5500_unlock();
+
+    *p_link_up = ((phy_cfg & PHYCFGR_LNK_ON) != 0U);
     return APP_STATUS_OK;
 }

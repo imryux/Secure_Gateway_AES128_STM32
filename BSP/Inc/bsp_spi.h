@@ -1,8 +1,8 @@
 /**
  * @file    bsp_spi.h
- * @brief   Hardware abstraction interface for SPI1 and SPI2 peripherals.
+ * @brief   SPI1 and SPI2 hardware abstraction interface with DMA burst support.
  * @version 1.0
- * @date    2026-11-08
+ * @date    2026-11-12
  */
 
 #ifndef BSP_SPI_H
@@ -12,39 +12,62 @@
 #include <stdint.h>
 
 #include "app_status.h"
-#include "bsp_gpio.h"
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-#define BSP_SPI_DEFAULT_TIMEOUT_MS (50U)
+/**
+ * @brief Hardware SPI bus identifier.
+ */
+typedef enum
+{
+    BSP_SPI_BUS_1 = 0, /**< SPI1 peripheral (connected to W5500 #1) */
+    BSP_SPI_BUS_2 = 1, /**< SPI2 peripheral (connected to W5500 #2) */
+    BSP_SPI_BUS_COUNT = 2
+} bsp_spi_bus_t;
 
 /**
- * @brief  Transmit and receive a single byte over SPI associated with target W5500.
- * @param[in]  chip_id Target module (BSP_W5500_ID_A for SPI1, BSP_W5500_ID_B for SPI2).
+ * @brief  Initialize static RTOS synchronization objects for SPI DMA transfers.
+ * @return APP_STATUS_OK on success, APP_STATUS_NO_MEMORY if semaphore creation fails.
+ */
+app_status_t bsp_spi_init(void);
+
+/**
+ * @brief  Transfer a single byte in full-duplex mode over the specified SPI bus.
+ * @param[in]  bus_id  Target SPI bus (BSP_SPI_BUS_1 or BSP_SPI_BUS_2).
  * @param[in]  tx_byte Byte to transmit.
- * @param[out] p_rx_byte Pointer to store received byte (can be NULL if ignored).
- * @return APP_STATUS_OK on success, error code otherwise.
+ * @param[out] p_rx_byte Pointer to store the received byte (must not be NULL).
+ * @return APP_STATUS_OK on success, error status otherwise.
  */
 app_status_t bsp_spi_transfer_byte(
-    bsp_w5500_id_t chip_id,
+    bsp_spi_bus_t bus_id,
     uint8_t tx_byte,
     uint8_t *p_rx_byte);
 
 /**
- * @brief  Transmit and receive multiple bytes sequentially over SPI.
- * @param[in]  chip_id Target module.
- * @param[in]  p_tx_data Pointer to transmit buffer (or NULL if sending dummy bytes 0xFF).
- * @param[out] p_rx_data Pointer to receive buffer (or NULL if receiving is ignored).
- * @param[in]  length Number of bytes to transfer.
- * @return APP_STATUS_OK on success, error code otherwise.
+ * @brief  Write a buffer over the specified SPI bus (uses DMA when scheduler is running).
+ * @param[in] bus_id Target SPI bus.
+ * @param[in] p_data Pointer to transmit buffer.
+ * @param[in] length Number of bytes to transmit.
+ * @return APP_STATUS_OK on success, error status otherwise.
  */
-app_status_t bsp_spi_transfer_buffer(
-    bsp_w5500_id_t chip_id,
-    const uint8_t *p_tx_data,
-    uint8_t *p_rx_data,
+app_status_t bsp_spi_write_burst(
+    bsp_spi_bus_t bus_id,
+    const uint8_t *p_data,
+    size_t length);
+
+/**
+ * @brief  Read a buffer over the specified SPI bus (uses DMA when scheduler is running).
+ * @param[in]  bus_id Target SPI bus.
+ * @param[out] p_data Pointer to receive buffer.
+ * @param[in]  length Number of bytes to receive.
+ * @return APP_STATUS_OK on success, error status otherwise.
+ */
+app_status_t bsp_spi_read_burst(
+    bsp_spi_bus_t bus_id,
+    uint8_t *p_data,
     size_t length);
 
 #ifdef __cplusplus

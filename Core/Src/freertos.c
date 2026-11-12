@@ -28,6 +28,8 @@
 #include "app_main.h"
 #include "bsp_gpio.h"
 #include "log_service.h"
+#include <stdbool.h>
+#include "bsp_w5500.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -142,23 +144,29 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-	/* POST: Initialize BSP, services, and verify W5500 hardware.
-	 * Non-fatal: errors are already logged inside app_main_init().
-	 * Allow heartbeat loop to run regardless so we can debug via UART. */
-	(void)app_main_init();
+	if (app_main_init() != APP_STATUS_OK)
+	{
+		Error_Handler();
+	}
 
-	uint32_t heartbeat_count = 0U;
+	TickType_t last_wake_time = xTaskGetTickCount();
+	const TickType_t period_ticks = pdMS_TO_TICKS(1000U);
 
+	/* Infinite loop */
 	for (;;)
 	{
+	    bool link_a = false;
+	    bool link_b = false;
+	    (void)bsp_w5500_is_link_up(BSP_W5500_ID_A, &link_a);
+	    (void)bsp_w5500_is_link_up(BSP_W5500_ID_B, &link_b);
+
 	    bsp_gpio_led_toggle();
-	    heartbeat_count++;
-
 	    (void)log_service_print(
-	        "Heartbeat #%lu | System Alive\r\n",
-	        (unsigned long)heartbeat_count);
+	        "PHY Status | W5500_A (SPI1): %s | W5500_B (SPI2): %s\r\n",
+	        (link_a == true) ? "UP" : "DOWN",
+	        (link_b == true) ? "UP" : "DOWN");
 
-	    osDelay(1000);
+	    vTaskDelayUntil(&last_wake_time, period_ticks);
 	}
   /* USER CODE END StartDefaultTask */
 }
