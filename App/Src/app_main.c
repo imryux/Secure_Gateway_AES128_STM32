@@ -17,6 +17,7 @@
 #include "bsp_w5500.h"
 #include "log_service.h"
 #include "net_service.h"
+#include "crypto_service.h"
 
 app_status_t app_main_init(void)
 {
@@ -66,5 +67,24 @@ app_status_t app_main_init(void)
         (void)log_service_print("ERROR: net_service_init failed (code=%d)\r\n", (int)status);
         return status;
     }
+    status = crypto_service_init();
+        if (status != APP_STATUS_OK)
+        {
+            return status;
+        }
+
+        status = crypto_service_run_self_test();
+        if (status != APP_STATUS_OK)
+        {
+            return status;
+        }
+
+        status = crypto_service_run_benchmark();
+        if (status != APP_STATUS_OK)
+        {
+            return status;
+        }
+
+        return APP_STATUS_OK;
     return APP_STATUS_OK;
 }
