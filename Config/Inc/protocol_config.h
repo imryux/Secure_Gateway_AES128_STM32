@@ -72,6 +72,17 @@ extern "C"
 #define PROTO_NET_B_GW_2              (20U)
 #define PROTO_NET_B_GW_3              (1U)
 
+/* Default Destination Peer IPs for UDP Forwarding */
+#define PROTO_NET_A_PEER_IP_0         (192U)
+#define PROTO_NET_A_PEER_IP_1         (168U)
+#define PROTO_NET_A_PEER_IP_2         (10U)
+#define PROTO_NET_A_PEER_IP_3         (10U)
+
+#define PROTO_NET_B_PEER_IP_0         (192U)
+#define PROTO_NET_B_PEER_IP_1         (168U)
+#define PROTO_NET_B_PEER_IP_2         (20U)
+#define PROTO_NET_B_PEER_IP_3         (10U)
+
 /**
  * @brief Supported transport protocol for each configured W5500 socket.
  */

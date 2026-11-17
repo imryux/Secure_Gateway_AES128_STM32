@@ -1,7 +1,7 @@
 /**
  * @file    app_main.c
  * @brief   Application initialization implementation.
- * @version 1.0
+ * @version 1.2
  * @date    2026-11-12
  */
 
@@ -15,13 +15,15 @@
 #include "app_config.h"
 #include "bsp_gpio.h"
 #include "bsp_w5500.h"
+#include "bsp_watchdog.h"
+#include "crypto_service.h"
+#include "gateway_tasks.h"
 #include "log_service.h"
 #include "net_service.h"
-#include "crypto_service.h"
+#include "relay_service.h"
 
 app_status_t app_main_init(void)
 {
-    /* Ensure both W5500 CS and RST lines are deasserted (HIGH) at boot */
     (void)bsp_gpio_w5500_cs_write(BSP_W5500_ID_A, false);
     (void)bsp_gpio_w5500_cs_write(BSP_W5500_ID_B, false);
     (void)bsp_gpio_w5500_rst_write(BSP_W5500_ID_A, false);
@@ -41,7 +43,6 @@ app_status_t app_main_init(void)
     status = bsp_w5500_init();
     if (status != APP_STATUS_OK)
     {
-        (void)log_service_print("ERROR: bsp_w5500_init failed (code=%d)\r\n", (int)status);
         return status;
     }
 
@@ -57,34 +58,39 @@ app_status_t app_main_init(void)
 
     if ((ver_a != BSP_W5500_EXPECTED_VERSION) || (ver_b != BSP_W5500_EXPECTED_VERSION))
     {
-        (void)log_service_print("ERROR: W5500 SPI verification failed!\r\n");
         return APP_STATUS_IO_ERROR;
     }
 
     status = net_service_init();
     if (status != APP_STATUS_OK)
     {
-        (void)log_service_print("ERROR: net_service_init failed (code=%d)\r\n", (int)status);
         return status;
     }
+
     status = crypto_service_init();
-        if (status != APP_STATUS_OK)
-        {
-            return status;
-        }
+    if (status != APP_STATUS_OK)
+    {
+        return status;
+    }
 
-        status = crypto_service_run_self_test();
-        if (status != APP_STATUS_OK)
-        {
-            return status;
-        }
+    status = crypto_service_run_self_test();
+    if (status != APP_STATUS_OK)
+    {
+        return status;
+    }
 
-        status = crypto_service_run_benchmark();
-        if (status != APP_STATUS_OK)
-        {
-            return status;
-        }
+    status = relay_service_init();
+    if (status != APP_STATUS_OK)
+    {
+        return status;
+    }
 
-        return APP_STATUS_OK;
+    status = gateway_tasks_start_all();
+    if (status != APP_STATUS_OK)
+    {
+        return status;
+    }
+
+    (void)bsp_watchdog_refresh();
     return APP_STATUS_OK;
 }

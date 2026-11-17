@@ -145,39 +145,12 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-	if (app_main_init() != APP_STATUS_OK)
-	{
-		Error_Handler();
-	}
-
-	TickType_t last_wake_time = xTaskGetTickCount();
-	const TickType_t period_ticks = pdMS_TO_TICKS(50U);
-	uint32_t loop_ticks = 0U;
+	const TickType_t idle_delay_ticks = pdMS_TO_TICKS(1000U);
 
 	/* Infinite loop */
 	for (;;)
 	{
-	    (void)net_service_service_chip(BSP_W5500_ID_A);
-	    (void)net_service_service_chip(BSP_W5500_ID_B);
-
-	    loop_ticks++;
-	    if (loop_ticks >= 40U)
-	    {
-	        loop_ticks = 0U;
-	        bsp_gpio_led_toggle();
-
-	        const uint32_t exti_a = net_service_fetch_exti_count(BSP_W5500_ID_A);
-	        const uint32_t exti_b = net_service_fetch_exti_count(BSP_W5500_ID_B);
-	        if ((exti_a > 0U) || (exti_b > 0U))
-	        {
-	            (void)log_service_print(
-	                "EXTI Triggered | W5500_A (PA2)=%lu | W5500_B (PB10)=%lu\r\n",
-	                (unsigned long)exti_a,
-	                (unsigned long)exti_b);
-	        }
-	    }
-
-	    vTaskDelayUntil(&last_wake_time, period_ticks);
+	    vTaskDelay(idle_delay_ticks);
 	}
   /* USER CODE END StartDefaultTask */
 }
