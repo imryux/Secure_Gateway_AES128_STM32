@@ -145,6 +145,14 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+	/* Initialize entire Secure Gateway application:
+	 * Configures W5500 SPI controllers, static network IP/ports,
+	 * AES-128 crypto engine, static frame buffer pool, and launches
+	 * all 5 dedicated FreeRTOS worker tasks (RxSpi1, RxSpi2, PacketProc, Tx, Heartbeat). */
+	(void)app_main_init();
+
+	/* Default startup task transitions to a low-frequency idle loop (1 second delay)
+	 * leaving CPU execution time available for the higher-priority gateway tasks. */
 	const TickType_t idle_delay_ticks = pdMS_TO_TICKS(1000U);
 
 	/* Infinite loop */

@@ -108,28 +108,54 @@ static app_status_t gateway_enqueue_rx_slot(uint8_t slot_idx)
     return APP_STATUS_OK;
 }
 
+/**
+ * @brief  Worker Task: Ingress handler for W5500 #1 (Network A over SPI1).
+ *         Sleeps waiting for a Task Notification from the EXTI ISR (PA2 falling edge)
+ *         or wakes up every 20ms as a fallback poll to ensure no frames are missed.
+ * @param  p_argument FreeRTOS task argument pointer (unused).
+ */
 static void gateway_rx_spi1_task_entry(void *p_argument)
 {
     (void)p_argument;
 
     for (;;)
     {
+        /* Wait for EXTI ISR notification or fallback timeout (20ms) */
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TASK_RX_POLL_FALLBACK_MS));
+
+        /* Poll active sockets on W5500 #1, allocate slots, read data, and enqueue */
         (void)relay_service_poll_rx(BSP_W5500_ID_A, gateway_enqueue_rx_slot);
     }
 }
 
+/**
+ * @brief  Worker Task: Ingress handler for W5500 #2 (Network B over SPI2).
+ *         Sleeps waiting for a Task Notification from the EXTI ISR (PB10 falling edge)
+ *         or wakes up every 20ms as a fallback poll to ensure no frames are missed.
+ * @param  p_argument FreeRTOS task argument pointer (unused).
+ */
 static void gateway_rx_spi2_task_entry(void *p_argument)
 {
     (void)p_argument;
 
     for (;;)
     {
+        /* Wait for EXTI ISR notification or fallback timeout (20ms) */
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TASK_RX_POLL_FALLBACK_MS));
+
+        /* Poll active sockets on W5500 #2, allocate slots, read data, and enqueue */
         (void)relay_service_poll_rx(BSP_W5500_ID_B, gateway_enqueue_rx_slot);
     }
 }
 
+/**
+ * @brief  Worker Task: Packet Processing and Encryption Pipeline.
+ *         Blocks indefinitely waiting for incoming slot indices from s_rx_queue_handle.
+ *         Encrypts the payload in-place using AES-128-CBC with a fresh 16-byte random IV,
+ *         then passes slot ownership to s_tx_queue_handle.
+ *         Frees slot immediately if encryption fails or if TX queue is full.
+ * @param  p_argument FreeRTOS task argument pointer (unused).
+ */
 static void gateway_packet_proc_task_entry(void *p_argument)
 {
     (void)p_argument;
@@ -137,26 +163,38 @@ static void gateway_packet_proc_task_entry(void *p_argument)
 
     for (;;)
     {
+        /* Block until a frame slot index is available in the RX queue */
         if (xQueueReceive(s_rx_queue_handle, &slot_idx, portMAX_DELAY) == pdTRUE)
         {
+            /* Perform in-place AES-128-CBC encryption on the slot payload */
             if (relay_service_encrypt_slot(slot_idx) == APP_STATUS_OK)
             {
+                /* Transfer slot ownership to the TX queue */
                 if (xQueueSend(
                         s_tx_queue_handle,
                         &slot_idx,
                         pdMS_TO_TICKS(TASK_QUEUE_SEND_TIMEOUT_MS)) != pdTRUE)
                 {
+                    /* TX queue is full: drop frame and return slot to buffer pool */
                     (void)relay_service_free_slot(slot_idx);
                 }
             }
             else
             {
+                /* Encryption failed: discard frame and return slot to buffer pool */
                 (void)relay_service_free_slot(slot_idx);
             }
         }
     }
 }
 
+/**
+ * @brief  Worker Task: Outbound Transmission Handler.
+ *         Blocks waiting for encrypted slot indices from s_tx_queue_handle.
+ *         Selects the destination W5500 chip opposite to the source, transmits the
+ *         encrypted frame over SPI, and unconditionally releases the slot back to the pool.
+ * @param  p_argument FreeRTOS task argument pointer (unused).
+ */
 static void gateway_tx_task_entry(void *p_argument)
 {
     (void)p_argument;
@@ -164,14 +202,25 @@ static void gateway_tx_task_entry(void *p_argument)
 
     for (;;)
     {
+        /* Block until an encrypted frame slot index is received from the TX queue */
         if (xQueueReceive(s_tx_queue_handle, &slot_idx, portMAX_DELAY) == pdTRUE)
         {
+            /* Transmit encrypted frame via opposite W5500 chip */
             (void)relay_service_transmit_slot(slot_idx);
+
+            /* End of pipeline: always release slot back to the static buffer pool */
             (void)relay_service_free_slot(slot_idx);
         }
     }
 }
 
+/**
+ * @brief  Worker Task: System Health, Network Supervision, and Hardware Watchdog.
+ *         Runs periodically at 200ms intervals (using vTaskDelayUntil to prevent drift).
+ *         Supervises Ethernet physical link state, resets stalled TCP sockets,
+ *         toggles the heartbeat LED (PC13), and kicks the hardware watchdog (IWDG 500ms).
+ * @param  p_argument FreeRTOS task argument pointer (unused).
+ */
 static void gateway_heartbeat_task_entry(void *p_argument)
 {
     (void)p_argument;
@@ -180,12 +229,16 @@ static void gateway_heartbeat_task_entry(void *p_argument)
 
     for (;;)
     {
+        /* Check physical Ethernet link status and recover hung TCP connections */
         relay_service_supervise_health();
+
+        /* Toggle onboard heartbeat LED (PC13) */
         bsp_gpio_led_toggle();
 
-        /* Refresh 500 ms hardware watchdog every 200 ms (Ref: Section III-C & IV-D) */
+        /* Refresh 500ms hardware watchdog counter every 200ms to prevent system reset */
         (void)bsp_watchdog_refresh();
 
+        /* Delay until exact next 200ms periodic milestone */
         vTaskDelayUntil(&last_wake_time, period_ticks);
     }
 }

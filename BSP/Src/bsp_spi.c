@@ -352,6 +352,18 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 }
 
 /**
+ * @brief  HAL SPI Receive Complete callback (invoked if HAL triggers RX DMA completion).
+ * @param  hspi Pointer to the HAL SPI handle.
+ */
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi != NULL)
+    {
+        bsp_spi_notify_dma_complete_from_isr(hspi, false);
+    }
+}
+
+/**
  * @brief  HAL SPI Error callback (invoked on overrun, mode fault, or DMA transfer error).
  * @param  hspi Pointer to the HAL SPI handle.
  */

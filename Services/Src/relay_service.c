@@ -233,7 +233,16 @@ app_status_t relay_service_poll_rx(
                 const uint16_t drop_len = (rx_avail > (uint16_t)sizeof(discard_buf))
                                               ? (uint16_t)sizeof(discard_buf)
                                               : rx_avail;
-                (void)recv(sn, discard_buf, drop_len);
+                if (p_cfg->protocol == PROTO_TYPE_TCP_SERVER)
+                {
+                    (void)recv(sn, discard_buf, drop_len);
+                }
+                else
+                {
+                    uint8_t dummy_ip[4] = {0U, 0U, 0U, 0U};
+                    uint16_t dummy_port = 0U;
+                    (void)recvfrom(sn, discard_buf, drop_len, dummy_ip, &dummy_port);
+                }
                 break;
             }
 
