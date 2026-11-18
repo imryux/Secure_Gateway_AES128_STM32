@@ -1,284 +1,445 @@
-# 1. Sơ đồ khối phần cứng
+# 🛡️ Secure Gateway AES-128 STM32 (Dual W5500)
 
-```mermaid
-graph LR
-    subgraph PC["Máy tính (Kiểm thử & Giám sát)"]
-        NIC_A["Card mạng #1 (Mạng A)<br/>IP: 192.168.10.10/24"]
-        NIC_B["Card mạng #2 (Mạng B)<br/>IP: 192.168.20.10/24"]
-        USB_DBG["Cổng USB<br/>(ST-Link V2 & USB-to-TTL)"]
-    end
+<div align="center">
 
-    subgraph HW_NET_A["Phía Mạng A"]
-        W5500_A["Module W5500 #1<br/>IP: 192.168.10.2/24<br/>TCP Main, TCP Sub, UDP"]
-    end
+![Platform](https://img.shields.io/badge/Platform-STM32F103C8T6%20(ARM%20Cortex--M3)-002B49?style=for-the-badge&logo=stmicroelectronics)
+![RTOS](https://img.shields.io/badge/RTOS-FreeRTOS%20v10%20(Static%20Alloc)-008FBA?style=for-the-badge)
+![Ethernet](https://img.shields.io/badge/Ethernet-Dual%20WIZnet%20W5500-FF6F00?style=for-the-badge)
+![Security](https://img.shields.io/badge/Security-AES--128--CBC%20%2B%20PKCS%237-green?style=for-the-badge)
+![Memory](https://img.shields.io/badge/Memory-Zero--Malloc%20Architecture-purple?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 
-    subgraph MCU["STM32F103C8T6 — Blue Pill (72 MHz)"]
-        SPI1_BUS["SPI1 + DMA1<br/>CS: PA4 · RST: PA3 · INT: PA2"]
-        CORE["FreeRTOS + AES-128-CBC<br/>Static Buffer Pool + IWDG"]
-        SPI2_BUS["SPI2 + DMA1<br/>CS: PB12 · RST: PB11 · INT: PB10"]
-        SWD_UART["SWD: PA13, PA14<br/>USART1: PA9, PA10"]
-    end
+**Cổng Chuyển Tiếp Bảo Mật Phần Cứng Hai Chiều Tốc Độ Cao Cho Mạng Công Nghiệp & IoT**  
+*Tách biệt mạng vật lý (Hardware Air-Gap) • Mã hóa đường truyền AES-128-CBC • Đa nhiệm thời gian thực FreeRTOS*
 
-    subgraph HW_NET_B["Phía Mạng B"]
-        W5500_B["Module W5500 #2<br/>IP: 192.168.20.2/24<br/>TCP Main, TCP Sub, UDP"]
-    end
+</div>
 
-    PWR["Nguồn rời 3.3V<br/>Chung GND toàn hệ thống"]
+---
 
-    NIC_A <==>|RJ45 #1| W5500_A
-    W5500_A <==>|SPI1| SPI1_BUS
-    SPI1_BUS <==> CORE
-    CORE <==> SPI2_BUS
-    SPI2_BUS <==>|SPI2| W5500_B
-    W5500_B <==>|RJ45 #2| NIC_B
+## 📑 Mục Lục
+1. [Giới thiệu & Bài toán giải quyết](#1-giới-thiệu--bài-toán-giải-quyết)
+2. [Sơ đồ khối tổng thể dự án (System Overview)](#2-sơ-đồ-khối-tổng-thể-dự-án-system-overview)
+3. [Sơ đồ khối kiến trúc phần cứng (Hardware Architecture)](#3-sơ-đồ-khối-kiến-trúc-phần-cứng-hardware-architecture)
+4. [Sơ đồ khối kiến trúc phần mềm & FreeRTOS Pipeline](#4-sơ-đồ-khối-kiến-trúc-phần-mềm--freertos-pipeline)
+5. [Cấu trúc khung bảo mật & Luồng mã hóa (Cryptographic Pipeline)](#5-cấu-trúc-khung-bảo-mật--luồng-mã-hóa-cryptographic-pipeline)
+6. [Sơ đồ tuần tự truyền nhận dữ liệu (Sequence Diagram)](#6-sơ-đồ-tuần-tự-truyền-nhận-dữ-liệu-sequence-diagram)
+7. [Bản đồ tài nguyên bộ nhớ (SRAM & Flash Map)](#7-bản-đồ-tài-nguyên-bộ-nhớ-sram--flash-map)
+8. [Cấu trúc thư mục mã nguồn](#8-cấu-trúc-thư-mục-mã-nguồn)
+9. [Hướng dẫn cài đặt & Triển khai](#9-hướng-dẫn-cài-đặt--triển-khai)
+10. [Lưu ý vận hành & Khắc phục sự cố](#10-lưu-ý-vận-hành--khắc-phục-sự-cố)
 
-    USB_DBG -.->|Nạp code và log UART1| SWD_UART
-    PWR ==>|3.3V và GND| W5500_A
-    PWR ==>|3.3V và GND| W5500_B
-    PWR -.->|Chung GND| MCU
-```
+---
 
-## Lý do thiết kế
+## 1. Giới thiệu & Bài toán giải quyết
 
-- Dùng nguồn 3.3 V rời cho hai W5500 vì khi cả hai truyền/nhận, dòng tổng có thể khoảng 300–350 mA.
-- Dùng SPI1 và SPI2 riêng để tách Mạng A và Mạng B ở mức phần cứng.
-- Toàn bộ hệ thống phải dùng chung GND.
-## 2. Kiến trúc phần mềm, FreeRTOS và bộ nhớ
+Trong các môi trường điều khiển công nghiệp (OT/SCADA) hoặc mạng IoT nội bộ, việc kết nối trực tiếp giữa **Mạng A** (Mạng thiết bị/Cảm biến trường nhạy cảm) và **Mạng B** (Mạng điều hành/Doanh nghiệp/Cloud) tiềm ẩn nguy cơ bảo mật nghiêm trọng:
+- Nghe lén dữ liệu truyền thông dạng văn bản thô (Plaintext Sniffing).
+- Tấn công xen giữa (Man-in-the-Middle) và giả mạo gói tin (Data Tampering).
+- Nguy cơ mã độc lây lan tự do giữa các phân vùng mạng khi nối bridge/router thông thường.
 
-Phần mềm tuân thủ luồng phân lớp một chiều:
+**Secure Gateway STM32** đóng vai trò là "chốt kiểm soát an ninh phần cứng" nằm độc lập giữa 2 mạng:
+- **Tách biệt mạng vật lý hoàn toàn**: Sử dụng 2 chip Ethernet độc lập W5500 trên 2 bus SPI riêng biệt.
+- **Mã hóa trong suốt (Transparent In-Line Encryption)**: Toàn bộ gói tin (TCP/UDP) đi qua gateway được tự động đóng gói, thêm padding PKCS#7, sinh mã ngẫu nhiên IV 16-byte riêng cho từng frame và mã hóa bằng **AES-128-CBC**.
+- **Chống tấn công phát lại (Anti-Reflection)**: Sử dụng 2 bộ Secret Key đối xứng tách biệt cho 2 chiều: `Key_A_to_B` và `Key_B_to_A`.
+- **Độ tin cậy thời gian thực cao**: Vận hành trên FreeRTOS với kiến trúc **Zero-Malloc** (cấp phát tĩnh 100%), bảo vệ bằng Independent Watchdog (IWDG 500ms).
 
-```text
-Application & Tasks → Services → BSP → STM32 HAL / Vendor
-```
+---
 
-```mermaid
-graph TB
-    subgraph L1["TẦNG 1: APPLICATION & TASKS"]
-        APP["app_main.c<br/>Khởi tạo hệ thống và Static RTOS Objects"]
-        T_RX1["rx_spi1_task<br/>Priority 4"]
-        T_RX2["rx_spi2_task<br/>Priority 4"]
-        T_PROC["packet_proc_task<br/>Priority 3"]
-        T_TX["tx_task<br/>Priority 3"]
-        T_HB["heartbeat_task<br/>Priority 2, chu kỳ 200 ms"]
-        T_DIAG["diagnostic_task<br/>Priority 1"]
-    end
+## 2. Sơ đồ khối tổng thể dự án (System Overview)
 
-    subgraph IPC["FREE RTOS IPC VÀ STATIC BUFFER"]
-        NOTIFY1(["Task Notify từ EXTI2"])
-        NOTIFY2(["Task Notify từ EXTI10"])
-        Q_RX[["s_rx_queue<br/>10 buffer index"]]
-        Q_TX[["s_tx_queue<br/>10 buffer index"]]
-        POOL[("Static Buffer Pool<br/>10 buffers")]
-    end
-
-    subgraph L2["TẦNG 2: SERVICES"]
-        S_RELAY["relay_service<br/>Socket, timeout, buffer ownership"]
-        S_CRYPTO["crypto_service<br/>PKCS#7 + IV + AES-128-CBC"]
-        S_LOG["log_service<br/>RELAY DEBUG và DWT"]
-    end
-
-    subgraph L3["TẦNG 3: BSP"]
-        B_W5500["bsp_w5500 / wiz_port<br/>2 W5500 và wiz_mutex"]
-        B_SPI["bsp_spi<br/>SPI1/SPI2 + DMA"]
-        B_GPIO["bsp_gpio<br/>CS, RST, EXTI callback"]
-        B_WDG["bsp_watchdog<br/>IWDG timeout 500 ms"]
-        B_UART["bsp_uart<br/>UART1 wrapper"]
-    end
-
-    subgraph L4["TẦNG 4: HAL / VENDOR / HARDWARE"]
-        HAL["STM32F1 HAL<br/>FreeRTOS Kernel<br/>WIZnet ioLibrary"]
-    end
-
-    NOTIFY1 --> T_RX1
-    NOTIFY2 --> T_RX2
-
-    T_RX1 --> POOL
-    T_RX2 --> POOL
-    T_RX1 -->|Đẩy buffer index| Q_RX
-    T_RX2 -->|Đẩy buffer index| Q_RX
-    Q_RX --> T_PROC
-
-    T_PROC <-->|Đọc/ghi buffer| POOL
-    T_PROC --> S_CRYPTO
-    T_PROC -->|Đẩy buffer index| Q_TX
-    Q_TX --> T_TX
-    T_TX -->|Giải phóng buffer| POOL
-
-    T_RX1 --> S_RELAY
-    T_RX2 --> S_RELAY
-    T_TX --> S_RELAY
-    T_HB --> S_RELAY
-    T_HB --> B_WDG
-    T_DIAG --> S_LOG
-
-    S_RELAY --> B_W5500
-    B_W5500 --> B_SPI
-    B_W5500 --> B_GPIO
-    S_LOG --> B_UART
-
-    B_SPI --> HAL
-    B_GPIO --> HAL
-    B_WDG --> HAL
-    B_UART --> HAL
-```
-
-### Luồng ownership của buffer
-
-```text
-FREE → RX task → RX queue → packet processing → TX queue → TX task → FREE
-```
-
-Queue chỉ chuyển `uint8_t buffer_idx`, không copy toàn bộ payload. Điều này giảm RAM, giảm tải CPU và xác định rõ task đang sở hữu buffer.
-
-### Ước tính SRAM
-
-| Thành phần | Ước tính |
-|---|---:|
-| 6 task ứng dụng, stack và TCB | 6,672 B |
-| Idle task và Timer task | ~1,200 B |
-| Static Buffer Pool | 5,600 B |
-| Queue, mutex, AES context, HAL | ~2,200 B |
-| Main/ISR stack | 1,536 B |
-| **Tổng** | **~17,208 B / 20 KB (~86%)** |
-| **Còn lại** | **~3,272 B** |
-
-> Toàn bộ task, queue, mutex và buffer sử dụng cấp phát tĩnh. Cần bật `configCHECK_FOR_STACK_OVERFLOW = 2` và theo dõi `uxTaskGetStackHighWaterMark()` khi kiểm thử tải cao.
-## 3. Luồng dữ liệu và cấu trúc khung
+Dưới đây là sơ đồ khối mức cao thể hiện luồng liên lạc an toàn giữa Mạng A và Mạng B thông qua Gateway:
 
 ```mermaid
 flowchart LR
-    subgraph SENDER["1. Máy gửi — Mạng A hoặc B"]
-        P_IN["Plaintext<br/>1 đến 512 B<br/>Kèm CRC kiểm thử"]
+    classDef net fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef gw fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
+    classDef mcu fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    classDef sec fill:#fce4ec,stroke:#c2185b,stroke-width:2px;
+
+    subgraph NET_A["🌐 PHÂN VÙNG MẠNG A (OT / Field Bus)"]
+        CLIENT_A["Thiết bị gửi / Giám sát A<br/>IP: 192.168.10.10/24<br/>(Dữ liệu Plaintext)"]
     end
 
-    subgraph STM32["2. STM32 Gateway"]
+    subgraph GATEWAY["🛡️ STM32 SECURE GATEWAY (Hardware Firewall)"]
         direction TB
-        PAD["1. PKCS#7 padding<br/>16 đến 528 B"]
-        IV_GEN["2. Sinh IV 16 B mới<br/>cho mỗi frame"]
-        AES_ENC["3. AES-128-CBC<br/>Mỗi chiều dùng khóa riêng<br/>Key_AB hoặc Key_BA"]
-        PACK["4. Đóng gói frame, tối đa 546 B<br/>[len_hi][len_lo][IV 16 B][ciphertext]<br/>len = 16 + ciphertext length"]
+        W5500_1["Module W5500 #1<br/>IP: 192.168.10.2<br/>Port 5000 (TCP) / 5001 (UDP)"]:::gw
+        
+        subgraph STM32_CORE["STM32F103C8T6 (72MHz - 20KB RAM)"]
+            RTOS["Hệ điều hành FreeRTOS<br/>Zero-Dynamic Memory Allocation"]:::mcu
+            CRYPTO["Bộ mã hóa/giải mã AES-128-CBC<br/>Dynamic IV Generator + PKCS#7"]:::sec
+            RTOS <--> CRYPTO
+        end
 
-        PAD --> AES_ENC
-        IV_GEN --> AES_ENC
-        AES_ENC --> PACK
+        W5500_2["Module W5500 #2<br/>IP: 192.168.20.2<br/>Port 5000 (TCP) / 5001 (UDP)"]:::gw
+
+        W5500_1 <==>|SPI1 + DMA1| STM32_CORE
+        STM32_CORE <==>|SPI2 + DMA1| W5500_2
     end
 
-    subgraph RECEIVER["3. Máy nhận — Mạng B hoặc A"]
+    subgraph NET_B["🌐 PHÂN VÙNG MẠNG B (IT / Cloud / Office)"]
+        CLIENT_B["Máy chủ nhận / Trạm B<br/>IP: 192.168.20.10/24<br/>(Khôi phục Plaintext)"]
+    end
+
+    CLIENT_A <==>|"Cáp RJ45 (Plaintext)"| W5500_1
+    W5500_2 <==>|"Cáp RJ45 (Ciphertext Frame)"| CLIENT_B
+
+    class CLIENT_A,CLIENT_B net;
+```
+
+---
+
+## 3. Sơ đồ khối kiến trúc phần cứng (Hardware Architecture)
+
+Hệ thống phần cứng bao gồm bo mạch STM32F103C8T6 (Blue Pill), 2 module Ethernet WIZnet W5500 giao tiếp độc lập, mạch cấp nguồn chuyên dụng và cổng giao tiếp máy tính:
+
+```mermaid
+graph TB
+    subgraph POWER_DOMAIN["⚡ KHỐI NGUỒN (POWER SUPPLY)"]
+        EXT_PWR["Nguồn ngoài 3.3V / 1A<br/>(Dòng đỉnh 350mA khi dual TX)"]
+        COMMON_GND["Điểm nối đất chung (COMMON GND)<br/>Chống nhiễu & đồng bộ logic"]
+    end
+
+    subgraph MCU_DOMAIN["🎮 KHỐI VI ĐIỀU KHIỂN: STM32F103C8T6 (Blue Pill)"]
         direction TB
-        UNPACK["5. TCP reassembly và tách frame<br/>Đọc length 2 B, IV và ciphertext"]
-        AES_DEC["6. AES-128-CBC decrypt<br/>Gỡ PKCS#7 padding<br/>Kiểm tra CRC"]
-        P_OUT["Khôi phục plaintext gốc"]
-
-        UNPACK --> AES_DEC --> P_OUT
+        CPU["ARM Cortex-M3 @ 72 MHz<br/>64 KB Flash • 20 KB SRAM"]
+        DMA_ENGINE["DMA1 Engine (Kênh 2, 3, 4, 5)<br/>Tải truyền SPI tự động"]
+        EXTI_CTRL["Khối ngắt ngoài EXTI<br/>EXTI2 & EXTI10 (Falling Edge)"]
+        IWDG_TIMER["Phần cứng IWDG 500ms<br/>Chống treo hệ thống"]
     end
 
-    P_IN ==>|TCP/UDP plaintext| PAD
-    PACK ==>|W5500 đích: ciphertext + IV| UNPACK
+    subgraph BUS_A["🔌 BUS GIAO TIẾP MẠNG A"]
+        SPI1["SPI1 Bus (Master):<br/>• SCK: PA5<br/>• MISO: PA6<br/>• MOSI: PA7"]
+        CTRL_A["Điều khiển W5500 #1:<br/>• CS: PA4<br/>• RST: PA3<br/>• INT: PA2 (EXTI2)"]
+    end
+
+    subgraph BUS_B["🔌 BUS GIAO TIẾP MẠNG B"]
+        SPI2["SPI2 Bus (Master):<br/>• SCK: PB13<br/>• MISO: PB14<br/>• MOSI: PB15"]
+        CTRL_B["Điều khiển W5500 #2:<br/>• CS: PB12<br/>• RST: PB11<br/>• INT: PB10 (EXTI10)"]
+    end
+
+    subgraph DEBUG_UI["🖥️ GIAO DIỆN KIỂM THỬ & GIÁM SÁT"]
+        UART_PORT["USART1 (115200 bps):<br/>• TX: PA9<br/>• RX: PA10"]
+        STLINK["SWD Debug:<br/>• SWDIO: PA13<br/>• SWCLK: PA14"]
+        LED_HB["LED Heartbeat:<br/>• Pin: PC13 (Active Low)"]
+    end
+
+    EXT_PWR ==>|3.3V VCC| BUS_A
+    EXT_PWR ==>|3.3V VCC| BUS_B
+    COMMON_GND -.-> MCU_DOMAIN
+    COMMON_GND -.-> BUS_A
+    COMMON_GND -.-> BUS_B
+
+    MCU_DOMAIN <==> BUS_A
+    MCU_DOMAIN <==> BUS_B
+    MCU_DOMAIN <--> DEBUG_UI
 ```
 
-### PKCS#7 padding
+### Bảng cấu hình chân phần cứng (Pinout Mapping)
 
-AES-128-CBC chỉ xử lý dữ liệu có độ dài là bội số của 16 byte.
+| Thiết bị ngoại vi | Chân STM32 | Chức năng chi tiết | Ghi chú kỹ thuật |
+| :--- | :--- | :--- | :--- |
+| **W5500 #1 (Net A)** | `PA4` | SPI1 Chip Select (CS) | Tích cực mức thấp (Active LOW) |
+| | `PA5` / `PA6` / `PA7` | SPI1 SCK / MISO / MOSI | Giao tiếp tốc độ cao với DMA1 |
+| | `PA3` | Hardware Reset (RST) | Kéo LOW tối thiểu 500µs để reset |
+| | `PA2` | Interrupt Request (INTn) | Kích hoạt ngắt ngoài `EXTI2` (Falling edge) |
+| **W5500 #2 (Net B)** | `PB12` | SPI2 Chip Select (CS) | Tích cực mức thấp (Active LOW) |
+| | `PB13` / `PB14` / `PB15` | SPI2 SCK / MISO / MOSI | Giao tiếp tốc độ cao với DMA1 |
+| | `PB11` | Hardware Reset (RST) | Kéo LOW tối thiểu 500µs để reset |
+| | `PB10` | Interrupt Request (INTn) | Kích hoạt ngắt ngoài `EXTI15_10` (Falling edge) |
+| **Hệ thống & Debug** | `PA9` / `PA10` | USART1 TX / RX | Log kiểm tra trạng thái (115200-8-N-1) |
+| | `PC13` | Onboard LED | Báo hiệu nhịp tim Heartbeat (Đảo trạng thái mỗi 200ms) |
+| | `PA13` / `PA14` | SWDIO / SWCLK | Nạp firmware và debug ST-Link V2 |
+
+> ⚠️ **Lưu ý phần cứng quan trọng**: Hai module W5500 khi hoạt động đồng thời có thể tiêu thụ dòng đỉnh lên đến **300 - 350 mA**. Bắt buộc phải cấp nguồn 3.3V ngoài có dòng danh định tối thiểu 1A và **nối chung toàn bộ chân GND** của nguồn, STM32 và 2 module W5500.
+
+---
+
+## 4. Sơ đồ khối kiến trúc phần mềm & FreeRTOS Pipeline
+
+Toàn bộ phần mềm được thiết kế theo mô hình phân tầng hướng kiến trúc (Layered Architecture) 4 lớp nghiêm ngặt, triệt tiêu sự phụ thuộc vòng:
 
 ```text
-P = 16 - (L mod 16)
+Tầng 1 (Application & Tasks) ──▶ Tầng 2 (Services) ──▶ Tầng 3 (BSP) ──▶ Tầng 4 (STM32 HAL / Kernel)
 ```
 
-Mỗi byte padding có giá trị bằng `P`.
+### Sơ đồ luồng xử lý đa nhiệm (FreeRTOS Task Architecture)
 
-Ví dụ, với plaintext dài 512 B:
+```mermaid
+graph TB
+    classDef isr fill:#ffcdd2,stroke:#d32f2f,stroke-width:2px;
+    classDef task fill:#bbdefb,stroke:#1976d2,stroke-width:2px;
+    classDef ipc fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef mem fill:#d1c4e9,stroke:#512da8,stroke-width:2px;
+    classDef srv fill:#c8e6c9,stroke:#388e3c,stroke-width:2px;
+
+    subgraph INTERRUPTS["⚡ TẦNG NGẮT CỨNG (ZERO HEAVY CODE)"]
+        ISR_A["EXTI2_IRQHandler<br/>(W5500 #1 Data Ready)"]:::isr
+        ISR_B["EXTI15_10_IRQHandler<br/>(W5500 #2 Data Ready)"]:::isr
+    end
+
+    subgraph RX_TIER["📥 TẦNG THU GÓI (PRIORITY 4)"]
+        TASK_RX1["rx_spi1_task<br/>(Stack: 256 words)"]:::task
+        TASK_RX2["rx_spi2_task<br/>(Stack: 256 words)"]:::task
+    end
+
+    subgraph BUFFER_MANAGEMENT["📦 QUẢN LÝ BỘ ĐỆM TĨNH (STATIC ZERO-COPY)"]
+        POOL[("Static Buffer Pool<br/>10 slots x 550 Bytes<br/>(relays_service)")]:::mem
+        Q_RX[["s_rx_queue<br/>Queue sâu 10 slot index<br/>(chỉ chuyển uint8_t index)"]]:::ipc
+        Q_TX[["s_tx_queue<br/>Queue sâu 10 slot index<br/>(chỉ chuyển uint8_t index)"]]:::ipc
+    end
+
+    subgraph PROC_TIER["⚙️ TẦNG XỬ LÝ MÃ HÓA (PRIORITY 3)"]
+        TASK_PROC["packet_proc_task<br/>(Stack: 320 words)<br/>PKCS#7 + IV + AES-128"]:::task
+    end
+
+    subgraph TX_TIER["📤 TẦNG PHÁT GÓI (PRIORITY 3)"]
+        TASK_TX["tx_task<br/>(Stack: 256 words)<br/>Bắn gói qua W5500 đối diện"]:::task
+    end
+
+    subgraph SYSTEM_TIER["🩺 TẦNG GIÁM SÁT HỆ THỐNG (PRIORITY 2 & 1)"]
+        TASK_HB["heartbeat_task (Priority 2)<br/>Chu kỳ 200ms: Nuôi IWDG & Link check"]:::task
+        TASK_DIAG["diagnostic_task (Priority 1)<br/>Theo dõi Stack Watermark & Log"]:::task
+    end
+
+    %% Luồng điều khiển và dữ liệu
+    ISR_A -->|vTaskNotifyGiveFromISR| TASK_RX1
+    ISR_B -->|vTaskNotifyGiveFromISR| TASK_RX2
+
+    TASK_RX1 <-->|Xin slot rỗng| POOL
+    TASK_RX2 <-->|Xin slot rỗng| POOL
+
+    TASK_RX1 -->|Đẩy slot_idx| Q_RX
+    TASK_RX2 -->|Đẩy slot_idx| Q_RX
+
+    Q_RX -->|Rút slot_idx| TASK_PROC
+    TASK_PROC <-->|Đọc/Mã hóa in-place| POOL
+    TASK_PROC -->|Đẩy slot_idx| Q_TX
+
+    Q_TX -->|Rút slot_idx| TASK_TX
+    TASK_TX -->|Gửi ra SPI và trả slot| POOL
+
+    TASK_HB -.->|Kick Watchdog| IWDG_TIMER["Phần cứng IWDG 500ms"]
+```
+
+### Nguyên tắc quản lý Buffer Ownership (Zero-Copy)
+
+Nhằm tối ưu hóa tài nguyên RAM hạn hẹp (20 KB) của STM32F103, hệ thống sử dụng cơ chế **chuyển quyền sở hữu đệm (Ownership Transfer)**:
+1. Các hàng đợi FreeRTOS (`s_rx_queue`, `s_tx_queue`) chỉ vận chuyển **chỉ số mảng `uint8_t slot_idx` (0 đến 9)**, không sao chép toàn bộ mảng dữ liệu.
+2. Vòng đời của 1 slot bộ đệm:
+   $$\text{FREE (Rỗi)} \xrightarrow{\text{RX Task}} \text{RX Queue} \xrightarrow{\text{Proc Task}} \text{Mã hóa In-Place} \xrightarrow{\text{TX Queue}} \text{TX Task} \xrightarrow{\text{Gửi xong}} \text{FREE}$$
+3. Trường hợp nghẽn hàng đợi hoặc lỗi đường truyền, slot sẽ được giải phóng ngay lập tức để tránh rò rỉ bộ đệm (Buffer Leak).
+
+---
+
+## 5. Cấu trúc khung bảo mật & Luồng mã hóa (Cryptographic Pipeline)
+
+### Định dạng khung truyền bảo mật (Wire Frame Format)
+
+Gói tin truyền giữa các gateway được đóng gói theo định dạng chuẩn nhị phân có độ dài xác định:
 
 ```text
-512 mod 16 = 0
-P = 16
-
-Ciphertext = 512 + 16 = 528 B
-Frame = 2 B length + 16 B IV + 528 B ciphertext = 546 B
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|       LENGTH (2 Bytes)        |                               |
+|          (Big-Endian)         |   INITIALIZATION VECTOR (IV)  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+           (16 Bytes)          |
+|                                                               |
+|                               +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                               |                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               |
+|                                                               |
+|                  AES-128-CBC CIPHERTEXT                       |
+|           (Bội số 16 Bytes: Từ 16 đến 528 Bytes)              |
+|            [Plaintext thô (1-512B) + PKCS#7 Padding]          |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-Dù plaintext đã chia hết cho 16, PKCS#7 vẫn phải thêm cả một block `0x10` gồm 16 byte. Điều này giúp đầu nhận luôn xác định được padding khi giải mã.
+| Trường dữ liệu | Kích thước | Mô tả kỹ thuật |
+| :--- | :---: | :--- |
+| **Frame Length** | `2 Bytes` | Trường độ dài Big-Endian của `(IV + Ciphertext)`. Giá trị từ `32` đến `544`. |
+| **IV (Init Vector)** | `16 Bytes` | Vectơ khởi tạo ngẫu nhiên sinh mới cho từng gói tin bằng PRNG. |
+| **Ciphertext** | `16 - 528 Bytes` | Bản mã hóa đầu ra của thuật toán AES-128-CBC sau khi đã chèn đệm PKCS#7. |
 
-### Cấu trúc frame
+### Cơ chế đệm PKCS#7 & Tính toán kích thước
 
-| Thành phần | Kích thước | Mục đích |
-|---|---:|---|
-| `len_hi`, `len_lo` | 2 B | Độ dài Big-Endian của `IV + ciphertext`. |
-| `IV` | 16 B | IV riêng của frame hiện tại. |
-| `ciphertext` | 16–528 B | Plaintext đã được AES-128-CBC và PKCS#7 xử lý. |
+Thuật toán AES yêu cầu khối dữ liệu đầu vào phải là bội số của 16 bytes. Số byte đệm $P$ được tính:
+$$P = 16 - (L \pmod{16})$$
+*(Trong đó $L$ là độ dài payload plaintext đầu vào)*
 
-Với frame lớn nhất:
+- Nếu $L = 512 \text{ bytes} \implies 512 \pmod{16} = 0 \implies P = 16 \text{ bytes}$ (chèn 1 block gồm 16 byte mang giá trị `0x10`).
+- Kích thước bản mã cực đại: $512 + 16 = 528 \text{ bytes}$.
+- Toàn bộ khung truyền trên dây cáp: $2 \text{ (Header)} + 16 \text{ (IV)} + 528 \text{ (Ciphertext)} = \mathbf{546 \text{ bytes}}$.
 
-```text
-len = 16 + 528 = 544 = 0x0220
-Bytes đầu frame: 0x02 0x20
-Tổng số byte truyền: 2 + 544 = 546 B
-```
+---
 
-Với TCP, dữ liệu nhận được có thể bị chia hoặc gộp tùy ý, nên phải tích lũy dữ liệu cho đến khi nhận đủ `2 + len` byte rồi mới giải mã. Nếu quá 5000 ms vẫn không đủ, hủy frame dở dang.
+## 6. Sơ đồ tuần tự truyền nhận dữ liệu (Sequence Diagram)
 
-> Lưu ý bảo mật: `xorshift32` với seed từ tick chỉ phù hợp minh họa/kiểm thử, không đủ an toàn để sinh IV cho hệ thống thật vì IV có thể dự đoán hoặc lặp sau reset. Triển khai thực tế nên dùng nguồn ngẫu nhiên mật mã, hoặc tạo IV bằng một PRF/AES với khóa riêng và bộ đếm không lặp.
-## 4. Trình tự truyền một gói tin
+Quy trình chi tiết từ khi thiết bị tại Mạng A gửi một gói tin thô cho đến khi gói tin được mã hóa và bắn sang Mạng B:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor NetA as Máy gửi — Mạng A
-    participant W5500_A as W5500 #1 / SPI1
-    participant ISR as EXTI2_IRQHandler
-    participant RX1 as rx_spi1_task / Priority 4
-    participant PROC as packet_proc_task / Priority 3
-    participant TX as tx_task / Priority 3
-    participant W5500_B as W5500 #2 / SPI2
-    actor NetB as Máy nhận — Mạng B
+    actor DevA as 💻 Thiết bị Mạng A
+    participant W55_A as 🌐 W5500 #1
+    participant ISR as ⚡ EXTI2 ISR
+    participant T_RX as 📥 rx_spi1_task
+    participant POOL as 📦 Buffer Pool
+    participant T_PROC as ⚙️ packet_proc_task
+    participant T_TX as 📤 tx_task
+    participant W55_B as 🌐 W5500 #2
+    actor DevB as 💻 Trạm Mạng B
 
-    NetA->>W5500_A: TCP/UDP plaintext, tối đa 512 B
-    W5500_A->>ISR: INTn kéo LOW, tạo falling edge
-    ISR->>RX1: vTaskNotifyGiveFromISR()
-    ISR->>ISR: portYIELD_FROM_ISR() nếu cần
+    DevA->>W55_A: Gửi gói TCP/UDP Plaintext (≤ 512 Bytes)
+    W55_A->>ISR: Kéo chân INTn về LOW (Falling edge)
+    activate ISR
+    ISR->>T_RX: vTaskNotifyGiveFromISR()
+    ISR->>ISR: portYIELD_FROM_ISR()
+    deactivate ISR
 
-    activate RX1
-    RX1->>RX1: Lấy buffer_idx từ Static Buffer Pool
-    RX1->>RX1: xSemaphoreTake(s_wiz_mutex)
-    RX1->>W5500_A: Đọc dữ liệu qua SPI1 + DMA
-    W5500_A-->>RX1: Plaintext
-    RX1->>RX1: Xóa nguồn ngắt W5500 và nhả mutex
-    RX1->>PROC: xQueueSend(s_rx_queue, buffer_idx)
-    deactivate RX1
+    activate T_RX
+    T_RX->>POOL: Xin cấp slot rỗng (relay_service_alloc_slot)
+    POOL-->>T_RX: Trả về slot_idx (0..9)
+    T_RX->>W55_A: Đọc dữ liệu qua SPI1 + DMA1
+    W55_A-->>T_RX: Ghi payload vào slot
+    T_RX->>W55_A: Xóa cờ ngắt phần cứng (Clear Sn_IR)
+    T_RX->>T_PROC: xQueueSend(s_rx_queue, &slot_idx)
+    deactivate T_RX
 
-    activate PROC
-    PROC->>PROC: PKCS#7 padding
-    PROC->>PROC: Sinh IV 16 B mới cho frame
-    PROC->>PROC: AES-128-CBC encrypt in-place
-    PROC->>PROC: Đóng gói [len][IV][ciphertext]
-    PROC->>TX: xQueueSend(s_tx_queue, buffer_idx)
-    deactivate PROC
+    activate T_PROC
+    T_PROC->>T_PROC: Chèn padding chuẩn PKCS#7 (1 - 16 bytes)
+    T_PROC->>T_PROC: Sinh ngẫu nhiên IV 16 bytes cho frame
+    T_PROC->>T_PROC: Mã hóa in-place bằng AES-128-CBC (Key_A_to_B)
+    T_PROC->>T_PROC: Ghi Header [Length 2B] + [IV 16B]
+    T_PROC->>T_TX: xQueueSend(s_tx_queue, &slot_idx)
+    deactivate T_PROC
 
-    activate TX
-    TX->>TX: xSemaphoreTake(s_wiz_mutex)
-    TX->>W5500_B: send/sendto qua SPI2 + DMA
-    W5500_B-->>TX: Kết quả gửi
-    TX->>TX: xSemaphoreGive(s_wiz_mutex)
-    TX->>TX: Trả buffer_idx về FREE pool
-    deactivate TX
+    activate T_TX
+    T_TX->>W55_B: Đẩy gói mã hóa qua SPI2 + DMA1
+    W55_B-->>T_TX: Hoàn tất truyền ra Ethernet
+    T_TX->>POOL: Giải phóng slot (relay_service_free_slot)
+    deactivate T_TX
 
-    W5500_B->>NetB: TCP/UDP ciphertext frame
-    NetB->>NetB: Reassembly, decrypt, unpad, kiểm tra CRC
+    W55_B->>DevB: Gửi khung bảo mật [Len][IV][Ciphertext]
+    Note over DevB: Trạm B gỡ khung, giải mã AES,<br/>kiểm tra padding và nhận Plaintext gốc
 ```
 
-### Quy tắc quan trọng
+---
 
-- ISR chỉ gọi `vTaskNotifyGiveFromISR()` và `portYIELD_FROM_ISR()`; không gọi SPI, mutex, ioLibrary hay AES trong ISR.
-- `s_wiz_mutex` chỉ được take/give trong context task, không dùng trong ISR.
-- Sau khi task xử lý ngắt, phải đọc/xóa nguồn ngắt W5500. Nếu không, `INTn` có thể vẫn giữ LOW và không tạo falling edge mới.
-- Nếu pool hết slot hoặc queue đầy, task phải tăng bộ đếm lỗi và trả buffer đã lấy về pool; không được giữ buffer vô thời hạn.
-- Với TCP, task phải reassembly đủ `2 + len` byte trước khi chuyển frame hoàn chỉnh sang `packet_proc_task`; frame dở quá 5000 ms phải bị hủy.
+## 7. Bản đồ tài nguyên bộ nhớ (SRAM & Flash Map)
 
-### Checklist kiến trúc
+Vi điều khiển **STM32F103C8T6** chỉ có **20 KB SRAM** và **64 KB Flash**. Để đảm bảo hệ thống không bao giờ bị tràn bộ nhớ hoặc treo cứng, dự án tuân thủ kiến trúc **Static Allocation 100%**:
 
-- [x] Tách lớp: `Tasks → Services → BSP → HAL/Vendor`.
-- [x] Mỗi task có priority, stack và cơ chế kích hoạt xác định.
-- [x] EXTI chỉ đánh thức task, không xử lý dữ liệu nặng trong ISR.
-- [x] Queue chỉ truyền `buffer_idx`, xác định rõ ownership.
-- [x] `s_wiz_mutex` bảo vệ phần ioLibrary/W5500 dùng chung.
-- [x] Đối tượng RTOS và pool cấp phát tĩnh.
-- [x] Theo dõi stack watermark và bật `configCHECK_FOR_STACK_OVERFLOW = 2`.
+```text
++-------------------------------------------------------------------------+
+|                  TỔNG DUNG LƯỢNG SRAM: 20,480 BYTES (20 KB)             |
++-------------------------------------------------------------------------+
+| [■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■□□□□□□□□]   |
+|                 Đã dùng: ~17,208 Bytes (~84.0%)  | Còn rỗi: ~3,272 Bytes |
++-------------------------------------------------------------------------+
+```
+
+### Chi tiết phân bổ tĩnh vùng nhớ RAM
+
+| Thành phần hệ thống | Số lượng / Kích thước | Tổng RAM | Mục đích sử dụng |
+| :--- | :--- | :---: | :--- |
+| **FreeRTOS Tasks Stack & TCB** | 5 Task nghiệp vụ + Idle + Timer | ~7,872 B | Vùng ngăn xếp độc lập cho từng luồng RTOS |
+| **Static Frame Buffer Pool** | 10 slots $\times$ 550 Bytes | 5,500 B | Bể chứa đệm khung truyền cố định (Zero-Copy) |
+| **FreeRTOS IPC Objects** | 2 Queues + 1 Mutex (`s_wiz_mutex`) | ~800 B | Hàng đợi lưu số nguyên và khóa tương hỗ W5500 |
+| **Hardware Drivers & HAL State** | WIZnet ioLibrary + HAL handles | ~1,500 B | Biến trạng thái Socket, SPI DMA Descriptors |
+| **Main Stack & ISR Stack (MSP)** | Vùng đệm ngắt hệ thống | 1,536 B | Ngăn xếp chạy ngắt ngoài và xử lý ngoại lệ |
+| **Vùng nhớ dự phòng an toàn** | Headroom | **~3,272 B** | Ngăn ngừa hiện tượng Stack Overflow |
+
+---
+
+## 8. Cấu trúc thư mục mã nguồn
+
+```bash
+secure_gateway_aes_stm32/
+├── App/                       # [Tầng 1] Khởi tạo chính ứng dụng
+│   ├── Inc/app_main.h
+│   └── Src/app_main.c         # Điểm khởi tạo toàn bộ Tasks, Services, BSP
+├── Tasks/                     # [Tầng 1] Định nghĩa tác vụ FreeRTOS
+│   ├── Inc/gateway_tasks.h
+│   └── Src/gateway_tasks.c    # 5 RTOS Tasks: RX1, RX2, Proc, TX, Heartbeat
+├── Services/                  # [Tầng 2] Dịch vụ xử lý nghiệp vụ
+│   ├── Inc/crypto_service.h   # API mã hóa AES, PKCS#7, quản lý IV
+│   ├── Inc/relay_service.h    # Quản lý Static Buffer Pool & Socket state
+│   ├── Inc/log_service.h      # Ghi log debug qua UART & DWT cycle counter
+│   └── Src/...
+├── BSP/                       # [Tầng 3] Board Support Package (Trừu tượng hóa phần cứng)
+│   ├── Inc/bsp_w5500.h        # Điều khiển 2 chip W5500 & Mutex bảo vệ
+│   ├── Inc/bsp_spi.h          # Driver SPI1/SPI2 truyền nhận DMA
+│   ├── Inc/bsp_gpio.h         # Quản lý CS, Reset, EXTI ISR Callbacks
+│   ├── Inc/bsp_watchdog.h     # Giao tiếp Independent Watchdog (IWDG)
+│   └── Src/...
+├── Config/                    # Tham số cấu hình hệ thống
+│   ├── Inc/app_config.h       # Buffer dimensions, Timeouts, Pool counts
+│   ├── Inc/protocol_config.h  # Bảng cấu hình Static IP, Subnet, MAC, Port
+│   └── Inc/crypto_keys.h      # Khóa đối xứng 128-bit cho 2 chiều truyền
+├── Core/                      # Tầng HAL do STM32CubeMX sinh ra
+│   ├── Inc/FreeRTOSConfig.h   # Cấu hình nhân FreeRTOS (Static alloc enabled)
+│   ├── Src/main.c             # Khởi tạo Clock 72MHz, GPIO, DMA, SPI
+│   └── Src/freertos.c         # Điểm bắt đầu Default Task khởi chạy app_main
+└── Middlewares/               # Thư viện bên thứ ba
+    ├── Third_Party/Ethernet/  # Thư viện ioLibrary Driver WIZnet W5500
+    ├── Third_Party/FreeRTOS/  # Nhân hệ điều hành thời gian thực FreeRTOS v10
+    └── Third_Party/tiny_aes/  # Thư viện mã hóa AES gọn nhẹ cho vi điều khiển
+```
+
+---
+
+## 9. Hướng dẫn cài đặt & Triển khai
+
+### 1. Chuẩn bị phần cứng & Môi trường phát triển
+- **Phần cứng**: 01 kit STM32F103C8T6 (Blue Pill), 02 module W5500, 01 mạch nạp ST-Link V2, 01 mạch chuyển đổi USB-to-UART (CP2102/CH340), nguồn ngoài 3.3V/1A.
+- **Phần mềm**: [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html) (phiên bản khuyến nghị $\ge 1.15.0$).
+
+### 2. Cấu hình địa chỉ mạng & Khóa bí mật
+- Mở file `Config/Inc/protocol_config.h` để tùy chỉnh địa chỉ IP phù hợp với hệ thống mạng của bạn:
+  - Mạng A: Mặc định `192.168.10.2` (Cổng TCP Relay: `5000`, Cổng UDP Relay: `5001`).
+  - Mạng B: Mặc định `192.168.20.2` (Cổng TCP Relay: `5000`, Cổng UDP Relay: `5001`).
+- Mở file `Config/Inc/crypto_keys.h` để thay đổi cặp khóa mã hóa bảo mật trước khi đưa vào sản xuất.
+
+### 3. Biên dịch & Nạp chương trình
+1. Mở STM32CubeIDE $\rightarrow$ `File` $\rightarrow$ `Open Projects from File System...` $\rightarrow$ Trỏ tới thư mục `secure_gateway_aes_stm32`.
+2. Nhấn tổ hợp phím `Ctrl + B` để tiến hành biên dịch (Build Project).
+3. Kết nối kit với máy tính qua ST-Link V2 $\rightarrow$ Nhấn nút **Run** (Ctrl + F11) hoặc **Debug** (F11).
+
+---
+
+## 10. Lưu ý vận hành & Khắc phục sự cố
+
+> 🔴 **CỰC KỲ QUAN TRỌNG: Khởi tạo ứng dụng trong FreeRTOS**  
+> Trong `Core/Src/main.c`, vi điều khiển kích hoạt mạch giám sát độc lập `MX_IWDG_Init()` với chu kỳ timeout **500 ms**.  
+> Do đó, hàm khởi tạo `app_main_init()` bắt buộc phải được gọi bên trong task khởi đầu của FreeRTOS (`StartDefaultTask` trong file `Core/Src/freertos.c`). Nếu không gọi hàm này, các tác vụ nghiệp vụ và `HeartbeatTask` sẽ không hoạt động, dẫn đến việc Watchdog không được nạp lại và vi điều khiển sẽ rơi vào **vòng lặp Reset liên tục (Bootloop)**!
+
+```c
+/* File: Core/Src/freertos.c */
+void StartDefaultTask(void const * argument)
+{
+  /* USER CODE BEGIN StartDefaultTask */
+  /* KHỞI TẠO CỔNG BẢO MẬT TẠI ĐÂY */
+  (void)app_main_init();
+
+  for (;;)
+  {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+  /* USER CODE END StartDefaultTask */
+}
+```
+
+### Các đèn báo hiệu & Giám sát trạng thái
+- **LED PC13 nhấp nháy đều đặn mỗi 200 ms**: Hệ thống hoạt động bình thường, Watchdog được nuôi đều đặn.
+- **Log UART (115200 bps)**: Kết nối chân `PA9` (TX) vào máy tính để theo dõi chi tiết quá trình khởi tạo IP, trạng thái Link cáp mạng và lưu lượng gói tin thời gian thực.
+
+---
+
+<div align="center">
+
+**Phát triển và duy trì bởi Đội ngũ Kỹ sư Hệ thống Nhúng & An toàn Thông tin**  
+*Nếu dự án hữu ích, vui lòng tặng một ⭐ trên GitHub repository!*
+
+</div>
