@@ -63,6 +63,12 @@ app_status_t bsp_w5500_lock(
     uint32_t timeout_ms);
 
 /**
+ * @brief  Get the currently active W5500 chip ID (under lock).
+ * @return Active chip identifier (BSP_W5500_ID_A or BSP_W5500_ID_B).
+ */
+bsp_w5500_id_t bsp_w5500_get_active_chip(void);
+
+/**
  * @brief  Release the global ioLibrary mutex.
  */
 void bsp_w5500_unlock(void);

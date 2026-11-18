@@ -168,11 +168,12 @@ app_status_t net_service_service_chip(bsp_w5500_id_t chip_id)
 
         net_service_ensure_socket_open(p_cfg);
 
-        /* Clear pending socket interrupt flags so W5500 INTn can trigger again */
+        /* Clear pending receive/connection socket interrupt flags so W5500 INTn can trigger again */
         const uint8_t ir_flags = getSn_IR(sn);
-        if (ir_flags != 0U)
+        const uint8_t rx_ir_flags = ir_flags & (uint8_t)(Sn_IR_RECV | Sn_IR_CON | Sn_IR_DISCON);
+        if (rx_ir_flags != 0U)
         {
-            setSn_IR(sn, ir_flags);
+            setSn_IR(sn, rx_ir_flags);
         }
 
         const uint16_t rx_avail = getSn_RX_RSR(sn);

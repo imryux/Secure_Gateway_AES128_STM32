@@ -22,3 +22,13 @@ Config/Inc/crypto_keys_secret.h
 # Python cache
 __pycache__/
 *.pycGIAI_THICH_TOAN_BO_CODE.md
+
+# Secret keys and build artifacts
+Config/Inc/crypto_keys.h
+Debug/
+Release/
+*.o
+*.d
+*.elf
+*.bin
+*.map

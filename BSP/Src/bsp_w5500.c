@@ -184,6 +184,11 @@ app_status_t bsp_w5500_lock(
     return APP_STATUS_OK;
 }
 
+bsp_w5500_id_t bsp_w5500_get_active_chip(void)
+{
+    return s_active_chip;
+}
+
 void bsp_w5500_unlock(void)
 {
     if ((xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) && (s_wiz_mutex_handle != NULL))
