@@ -1,14 +1,5 @@
 # 🛡️ Secure Gateway AES-128 STM32 (Dual W5500)
 
-<div align="center">
-
-![Platform](https://img.shields.io/badge/Platform-STM32F103C8T6%20(ARM%20Cortex--M3)-002B49?style=for-the-badge&logo=stmicroelectronics)
-![RTOS](https://img.shields.io/badge/RTOS-FreeRTOS%20v10%20(Static%20Alloc)-008FBA?style=for-the-badge)
-![Ethernet](https://img.shields.io/badge/Ethernet-Dual%20WIZnet%20W5500-FF6F00?style=for-the-badge)
-![Security](https://img.shields.io/badge/Security-AES--128--CBC%20%2B%20PKCS%237-green?style=for-the-badge)
-![Memory](https://img.shields.io/badge/Memory-Zero--Malloc%20Architecture-purple?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
-
 **Cổng Chuyển Tiếp Bảo Mật Phần Cứng Hai Chiều Tốc Độ Cao Cho Mạng Công Nghiệp & IoT**  
 *Tách biệt mạng vật lý (Hardware Air-Gap) • Mã hóa đường truyền AES-128-CBC • Đa nhiệm thời gian thực FreeRTOS*
 
