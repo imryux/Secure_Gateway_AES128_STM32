@@ -25,6 +25,7 @@ __pycache__/
 
 # Local documentation / explanation notes
 GIAI_THICH_TOAN_BO_CODE.md
+CODE_EXPLANATION.md
 
 # Secret keys and build artifacts
 Config/Inc/crypto_keys.h
