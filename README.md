@@ -25,8 +25,6 @@
 6. [Sơ đồ tuần tự truyền nhận dữ liệu (Sequence Diagram)](#6-sơ-đồ-tuần-tự-truyền-nhận-dữ-liệu-sequence-diagram)
 7. [Bản đồ tài nguyên bộ nhớ (SRAM & Flash Map)](#7-bản-đồ-tài-nguyên-bộ-nhớ-sram--flash-map)
 8. [Cấu trúc thư mục mã nguồn](#8-cấu-trúc-thư-mục-mã-nguồn)
-9. [Hướng dẫn cài đặt & Triển khai](#9-hướng-dẫn-cài-đặt--triển-khai)
-10. [Lưu ý vận hành & Khắc phục sự cố](#10-lưu-ý-vận-hành--khắc-phục-sự-cố)
 
 ---
 
@@ -387,59 +385,3 @@ secure_gateway_aes_stm32/
     ├── Third_Party/FreeRTOS/  # Nhân hệ điều hành thời gian thực FreeRTOS v10
     └── Third_Party/tiny_aes/  # Thư viện mã hóa AES gọn nhẹ cho vi điều khiển
 ```
-
----
-
-## 9. Hướng dẫn cài đặt & Triển khai
-
-### 1. Chuẩn bị phần cứng & Môi trường phát triển
-- **Phần cứng**: 01 kit STM32F103C8T6 (Blue Pill), 02 module W5500, 01 mạch nạp ST-Link V2, 01 mạch chuyển đổi USB-to-UART (CP2102/CH340), nguồn ngoài 3.3V/1A.
-- **Phần mềm**: [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html) (phiên bản khuyến nghị $\ge 1.15.0$).
-
-### 2. Cấu hình địa chỉ mạng & Khóa bí mật
-- Mở file `Config/Inc/protocol_config.h` để tùy chỉnh địa chỉ IP phù hợp với hệ thống mạng của bạn:
-  - Mạng A: Mặc định `192.168.10.2` (Cổng TCP Relay: `5000`, Cổng UDP Relay: `5001`).
-  - Mạng B: Mặc định `192.168.20.2` (Cổng TCP Relay: `5000`, Cổng UDP Relay: `5001`).
-- Mở file `Config/Inc/crypto_keys.h` để thay đổi cặp khóa mã hóa bảo mật trước khi đưa vào sản xuất.
-
-### 3. Biên dịch & Nạp chương trình
-1. Mở STM32CubeIDE $\rightarrow$ `File` $\rightarrow$ `Open Projects from File System...` $\rightarrow$ Trỏ tới thư mục `secure_gateway_aes_stm32`.
-2. Nhấn tổ hợp phím `Ctrl + B` để tiến hành biên dịch (Build Project).
-3. Kết nối kit với máy tính qua ST-Link V2 $\rightarrow$ Nhấn nút **Run** (Ctrl + F11) hoặc **Debug** (F11).
-
----
-
-## 10. Lưu ý vận hành & Khắc phục sự cố
-
-> 🔴 **CỰC KỲ QUAN TRỌNG: Khởi tạo ứng dụng trong FreeRTOS**  
-> Trong `Core/Src/main.c`, vi điều khiển kích hoạt mạch giám sát độc lập `MX_IWDG_Init()` với chu kỳ timeout **500 ms**.  
-> Do đó, hàm khởi tạo `app_main_init()` bắt buộc phải được gọi bên trong task khởi đầu của FreeRTOS (`StartDefaultTask` trong file `Core/Src/freertos.c`). Nếu không gọi hàm này, các tác vụ nghiệp vụ và `HeartbeatTask` sẽ không hoạt động, dẫn đến việc Watchdog không được nạp lại và vi điều khiển sẽ rơi vào **vòng lặp Reset liên tục (Bootloop)**!
-
-```c
-/* File: Core/Src/freertos.c */
-void StartDefaultTask(void const * argument)
-{
-  /* USER CODE BEGIN StartDefaultTask */
-  /* KHỞI TẠO CỔNG BẢO MẬT TẠI ĐÂY */
-  (void)app_main_init();
-
-  for (;;)
-  {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-  /* USER CODE END StartDefaultTask */
-}
-```
-
-### Các đèn báo hiệu & Giám sát trạng thái
-- **LED PC13 nhấp nháy đều đặn mỗi 200 ms**: Hệ thống hoạt động bình thường, Watchdog được nuôi đều đặn.
-- **Log UART (115200 bps)**: Kết nối chân `PA9` (TX) vào máy tính để theo dõi chi tiết quá trình khởi tạo IP, trạng thái Link cáp mạng và lưu lượng gói tin thời gian thực.
-
----
-
-<div align="center">
-
-**Phát triển và duy trì bởi Đội ngũ Kỹ sư Hệ thống Nhúng & An toàn Thông tin**  
-*Nếu dự án hữu ích, vui lòng tặng một ⭐ trên GitHub repository!*
-
-</div>
