@@ -31,6 +31,10 @@ static struct AES_ctx s_aes_ctx_b_to_a;
 static uint32_t s_prng_state = CRYPTO_PRNG_FALLBACK_SEED;
 static bool s_is_initialized = false;
 
+/**
+ * @brief  Retrieve current system tick count (FreeRTOS scheduler-aware).
+ * @return Current tick counter value.
+ */
 static uint32_t crypto_get_system_tick(void)
 {
     if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
@@ -41,7 +45,12 @@ static uint32_t crypto_get_system_tick(void)
     return HAL_GetTick();
 }
 
-/* Lightweight xorshift32 PRNG (Ref: Section III-B & IV-C in Reference Paper) */
+/**
+ * @brief  Lightweight 32-bit xorshift pseudo-random number generator (PRNG).
+ *         Used to generate unpredictable per-frame initialization vectors (IVs).
+ *         (Ref: Section III-B & IV-C in Reference Paper)
+ * @return 32-bit pseudo-random value.
+ */
 static uint32_t crypto_xorshift32_next(void)
 {
     uint32_t state = s_prng_state;
@@ -58,6 +67,10 @@ static uint32_t crypto_xorshift32_next(void)
     return state;
 }
 
+/**
+ * @brief  Generate a 16-byte random IV for AES-128-CBC per-frame encryption.
+ * @param  p_iv_out Pointer to 16-byte destination buffer.
+ */
 static void crypto_generate_iv(uint8_t *p_iv_out)
 {
     /* Mix current tick into PRNG state before generating 16-byte per-frame IV */

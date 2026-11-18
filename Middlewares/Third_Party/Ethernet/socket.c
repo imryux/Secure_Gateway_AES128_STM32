@@ -61,6 +61,8 @@
 #define SOCK_ANY_PORT_NUM  0xC000
 
 static uint16_t sock_any_port = SOCK_ANY_PORT_NUM;
+
+/* Separate socket I/O tracking state per W5500 chip to prevent cross-chip contention */
 static uint16_t s_sock_io_mode[BSP_W5500_COUNT] = {0, 0};
 static uint16_t s_sock_is_sending[BSP_W5500_COUNT] = {0, 0};
 #define sock_io_mode      (s_sock_io_mode[bsp_w5500_get_active_chip()])

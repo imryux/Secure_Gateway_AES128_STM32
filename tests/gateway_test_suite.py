@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Bộ công cụ kiểm thử tự động cho dự án Secure Gateway (STM32F103 + Dual W5500 + AES-128-CBC).
-Khớp với khóa mật mã trong Config/Inc/crypto_keys.h và định dạng khung [len(2B)][IV(16B)][ciphertext].
+Automated Test Suite for Secure Gateway Project (STM32F103 + Dual W5500 + AES-128-CBC).
+Matches cryptographic keys in Config/Inc/crypto_keys.h and frame format [len(2B)][IV(16B)][ciphertext].
 """
 
 import random
@@ -12,7 +12,7 @@ import zlib
 from Crypto.Cipher import AES
 
 # ==============================================================================
-# 1. CẤU HÌNH MẠNG VÀ KHÓA MẬT MÃ (PHẢI KHỚP 100% VỚI FIRMWARE STM32)
+# 1. NETWORK CONFIGURATION AND CRYPTOGRAPHIC KEYS (MUST MATCH STM32 FIRMWARE)
 # ==============================================================================
 PC_NET_A_IP = "192.168.10.10"
 W5500_A_IP  = "192.168.10.2"
@@ -23,7 +23,7 @@ W5500_B_IP  = "192.168.20.2"
 TCP_PORT = 5000
 UDP_PORT = 5001
 
-# Khóa 128-bit khớp với CRYPTO_KEY_A_TO_B_INIT và CRYPTO_KEY_B_TO_A_INIT
+# 128-bit symmetric keys matching CRYPTO_KEY_A_TO_B_INIT and CRYPTO_KEY_B_TO_A_INIT
 KEY_A_TO_B = bytes([
     0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
     0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C
@@ -38,27 +38,27 @@ MAX_PLAINTEXT_SIZE = 512
 
 
 # ==============================================================================
-# 2. CÁC HÀM XỬ LÝ KHUNG TIN, ĐỆM PKCS#7, CRC32 VÀ GIẢI MÃ AES-128-CBC
+# 2. FRAME PROCESSING, PKCS#7 PADDING, CRC32, AND AES-128-CBC DECRYPTION
 # ==============================================================================
 def pkcs7_unpad(data: bytes) -> bytes:
-    """Gỡ đệm PKCS#7 và kiểm tra tính hợp lệ của các byte đệm."""
+    """Remove PKCS#7 padding and validate padding bytes."""
     if len(data) == 0 or (len(data) % 16) != 0:
-        raise ValueError("Do dai ban giai ma khong phai boi so cua 16 byte")
+        raise ValueError("Decrypted length is not a multiple of 16 bytes")
     pad_len = data[-1]
     if pad_len < 1 or pad_len > 16:
-        raise ValueError(f"Gia tri dem PKCS#7 khong hop le: {pad_len}")
+        raise ValueError(f"Invalid PKCS#7 padding value: {pad_len}")
     if data[-pad_len:] != bytes([pad_len]) * pad_len:
-        raise ValueError("Cac byte dem PKCS#7 khong dong nhat")
+        raise ValueError("PKCS#7 padding bytes are not uniform")
     return data[:-pad_len]
 
 
 def build_test_payload(seq_num: int, total_size: int = 512, tag: bytes = b"SECURE_GW") -> bytes:
     """
-    Đóng gói bản rõ kiểm thử gồm: [seq_num (4B)] + [nội dung ASCII] + [CRC32 (4B)].
-    Giúp bên nhận phát hiện ngay nếu giải mã sai dù chỉ 1 bit.
+    Construct test plaintext payload: [seq_num (4B)] + [ASCII content] + [CRC32 (4B)].
+    Enables receiver to immediately detect even a single-bit decryption or transmission error.
     """
     if total_size < 16 or total_size > MAX_PLAINTEXT_SIZE:
-        raise ValueError("Kich thuoc payload phai nam trong khoang 16..512 byte")
+        raise ValueError("Payload size must be between 16 and 512 bytes")
     header = struct.pack(">I", seq_num)
     body_len = total_size - 8
     pattern = tag + f"_SEQ_{seq_num:05d}_".encode("ascii")
@@ -70,7 +70,7 @@ def build_test_payload(seq_num: int, total_size: int = 512, tag: bytes = b"SECUR
 
 
 def verify_and_extract_payload(plaintext: bytes):
-    """Kiểm tra CRC32 của bản rõ sau khi giải mã và trả về (is_valid, seq_num, preview_text)."""
+    """Verify CRC32 of decrypted plaintext and return (is_valid, seq_num, preview_text)."""
     if len(plaintext) < 8:
         return False, -1, ""
     raw_without_crc = plaintext[:-4]
@@ -83,10 +83,10 @@ def verify_and_extract_payload(plaintext: bytes):
 
 def decrypt_gateway_frame(frame_body: bytes, key: bytes) -> bytes:
     """
-    Giải mã phần thân khung [IV (16B)][ciphertext] nhận được từ W5500 đích.
+    Decrypt frame body [IV (16B)][ciphertext] received from destination W5500.
     """
     if len(frame_body) < 32 or ((len(frame_body) - 16) % 16) != 0:
-        raise ValueError(f"Kich thuoc khung ma hoa khong hop le: {len(frame_body)}B")
+        raise ValueError(f"Invalid encrypted frame size: {len(frame_body)}B")
     iv = frame_body[:16]
     ciphertext = frame_body[16:]
     cipher = AES.new(key, AES.MODE_CBC, iv=iv)
@@ -95,18 +95,18 @@ def decrypt_gateway_frame(frame_body: bytes, key: bytes) -> bytes:
 
 
 def tcp_recv_exact(sock: socket.socket, num_bytes: int) -> bytes:
-    """Đọc chính xác num_bytes từ luồng TCP (tránh lỗi phân mảnh gói tin TCP)."""
+    """Read exact number of bytes from TCP stream (avoids TCP packet fragmentation issues)."""
     chunks = bytearray()
     while len(chunks) < num_bytes:
         part = sock.recv(num_bytes - len(chunks))
         if not part:
-            raise ConnectionError("Ket noi TCP bi ngat khi dang doc khung")
+            raise ConnectionError("TCP connection closed while reading frame")
         chunks.extend(part)
     return bytes(chunks)
 
 
 def tcp_recv_gateway_frame(sock: socket.socket) -> tuple[bytes, bytes]:
-    """Đọc trọn vẹn 1 khung [len_hi][len_lo][IV(16B)][ciphertext] từ TCP."""
+    """Read complete [len_hi][len_lo][IV(16B)][ciphertext] frame from TCP stream."""
     len_hdr = tcp_recv_exact(sock, 2)
     payload_len = struct.unpack(">H", len_hdr)[0]
     frame_body = tcp_recv_exact(sock, payload_len)
@@ -115,7 +115,7 @@ def tcp_recv_gateway_frame(sock: socket.socket) -> tuple[bytes, bytes]:
 
 
 def open_tcp_pair():
-    """Mở cặp kết nối TCP tới W5500 #1 (Mạng A) và W5500 #2 (Mạng B)."""
+    """Establish concurrent TCP connections to W5500 #1 (Network A) and W5500 #2 (Network B)."""
     sock_a = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock_a.settimeout(3.0)
     sock_a.bind((PC_NET_A_IP, 0))
@@ -129,15 +129,15 @@ def open_tcp_pair():
 
 
 # ==============================================================================
-# 3. BỐN KỊCH BẢN KIỂM THỬ THỰC NGHIỆM (KHỚP VỚI MỤC V TRONG BÀI BÁO)
+# 3. EMPIRICAL TEST SCENARIOS (MATCHING SECTION V OF PAPER / DOCUMENTATION)
 # ==============================================================================
 def test_mode_1_e2e_bidirectional():
-    print("\n--- [MODE 1] KIEM THU GIAI MA DAU-CUOI HAI CHIEU (TCP & UDP) ---")
+    print("\n--- [MODE 1] END-TO-END BIDIRECTIONAL DECRYPTION TEST (TCP & UDP) ---")
     num_packets = 50
     sock_a, sock_b = open_tcp_pair()
 
     try:
-        # 1. Chiều TCP A -> B
+        # 1. TCP Direction A -> B
         ok_a2b = 0
         seen_ivs = set()
         for seq in range(1, num_packets + 1):
@@ -150,11 +150,11 @@ def test_mode_1_e2e_bidirectional():
             if valid and plain_rx == plain_tx:
                 ok_a2b += 1
             if seq <= 3:
-                print(f"  [TCP A->B #{seq}] IV={iv.hex()[:16]}... | Giai ma: '{preview}' | CRC={'OK' if valid else 'FAIL'}")
+                print(f"  [TCP A->B #{seq}] IV={iv.hex()[:16]}... | Decrypted: '{preview}' | CRC={'OK' if valid else 'FAIL'}")
 
-        print(f"=> Ket qua TCP A -> B: Thanh cong {ok_a2b}/{num_packets} goi | So IV duy nhat: {len(seen_ivs)}/{num_packets}")
+        print(f"=> TCP A -> B Result: Success {ok_a2b}/{num_packets} packets | Unique IVs: {len(seen_ivs)}/{num_packets}")
 
-        # 2. Chiều TCP B -> A
+        # 2. TCP Direction B -> A
         ok_b2a = 0
         for seq in range(1, num_packets + 1):
             plain_tx = build_test_payload(seq, total_size=128, tag=b"MSG_B2A")
@@ -165,14 +165,14 @@ def test_mode_1_e2e_bidirectional():
             if valid and plain_rx == plain_tx:
                 ok_b2a += 1
             if seq <= 3:
-                print(f"  [TCP B->A #{seq}] IV={iv.hex()[:16]}... | Giai ma: '{preview}' | CRC={'OK' if valid else 'FAIL'}")
+                print(f"  [TCP B->A #{seq}] IV={iv.hex()[:16]}... | Decrypted: '{preview}' | CRC={'OK' if valid else 'FAIL'}")
 
-        print(f"=> Ket qua TCP B -> A: Thanh cong {ok_b2a}/{num_packets} goi")
+        print(f"=> TCP B -> A Result: Success {ok_b2a}/{num_packets} packets")
     finally:
         sock_a.close()
         sock_b.close()
 
-    # 3. Chiều UDP A -> B
+    # 3. UDP Direction A -> B
     udp_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_a.settimeout(2.0)
@@ -192,19 +192,19 @@ def test_mode_1_e2e_bidirectional():
             if valid and plain_rx == plain_tx:
                 ok_udp += 1
             time.sleep(0.02)
-        print(f"=> Ket qua UDP A -> B: Thanh cong {ok_udp}/30 goi")
+        print(f"=> UDP A -> B Result: Success {ok_udp}/30 packets")
     finally:
         udp_a.close()
         udp_b.close()
 
 
 def test_mode_2_throughput():
-    print("\n--- [MODE 2] DO THONG LUONG THUC TE TCP & UDP (PAYLOAD 512B, MUC TIEU 50 GOI/GIAY) ---")
+    print("\n--- [MODE 2] EMPIRICAL TCP & UDP THROUGHPUT (512B PAYLOAD, TARGET 50 PPS) ---")
     duration_sec = 10.0
     target_pps = 50.0
     interval = 1.0 / target_pps
 
-    # Đo thông lượng TCP
+    # Measure TCP throughput
     sock_a, sock_b = open_tcp_pair()
     try:
         sent_count = 0
@@ -232,15 +232,15 @@ def test_mode_2_throughput():
         pps = recv_count / elapsed
         kbps = (recv_count * 512.0) / 1024.0 / elapsed
         loss_pct = max(0.0, (sent_count - recv_count) * 100.0 / max(1, sent_count))
-        print(f"[TCP 512B] Gui: {sent_count} | Nhan: {recv_count} (CRC OK: {crc_ok_count}) "
-              f"| Thong luong: {pps:.2f} goi/giay ({kbps:.2f} KB/s) | Mat goi: {loss_pct:.1f}%")
+        print(f"[TCP 512B] Sent: {sent_count} | Recv: {recv_count} (CRC OK: {crc_ok_count}) "
+              f"| Throughput: {pps:.2f} pps ({kbps:.2f} KB/s) | Packet loss: {loss_pct:.1f}%")
     finally:
         sock_a.close()
         sock_b.close()
 
     time.sleep(0.5)
 
-    # Đo thông lượng UDP
+    # Measure UDP throughput
     udp_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_b.settimeout(0.005)
@@ -276,15 +276,15 @@ def test_mode_2_throughput():
         pps = recv_udp / elapsed
         kbps = (recv_udp * 512.0) / 1024.0 / elapsed
         loss_pct = max(0.0, (sent_udp - recv_udp) * 100.0 / max(1, sent_udp))
-        print(f"[UDP 512B] Gui: {sent_udp} | Nhan: {recv_udp} (CRC OK: {crc_ok_udp}) "
-              f"| Thong luong: {pps:.2f} goi/giay ({kbps:.2f} KB/s) | Mat goi: {loss_pct:.1f}%")
+        print(f"[UDP 512B] Sent: {sent_udp} | Recv: {recv_udp} (CRC OK: {crc_ok_udp}) "
+              f"| Throughput: {pps:.2f} pps ({kbps:.2f} KB/s) | Packet loss: {loss_pct:.1f}%")
     finally:
         udp_a.close()
         udp_b.close()
 
 
 def test_mode_3_reconnect_recovery():
-    print("\n--- [MODE 3] DO THOI GIAN KHOI PHUC KET NOI TCP (SOCKET DU PHONG, n=20 LAN) ---")
+    print("\n--- [MODE 3] TCP RECONNECTION RECOVERY TIME (BACKUP SOCKET, n=20 TRIALS) ---")
     trials = 20
     recovery_times_ms = []
 
@@ -300,13 +300,13 @@ def test_mode_3_reconnect_recovery():
             sock_a.bind((PC_NET_A_IP, 0))
             sock_a.connect((W5500_A_IP, TCP_PORT))
 
-            # Gửi 1 gói xác nhận kết nối hoạt động
+            # Send 1 packet to confirm active connection
             pkt = build_test_payload(idx, total_size=64)
             sock_a.sendall(pkt)
             _, frame_body = tcp_recv_gateway_frame(sock_b)
             _ = decrypt_gateway_frame(frame_body, KEY_A_TO_B)
 
-            # Ngắt kết nối đột ngột và đo thời gian kết nối lại + truyền gói kế tiếp thành công
+            # Abruptly close connection and measure reconnect + next packet transmission time
             t0 = time.perf_counter()
             sock_a.close()
 
@@ -325,26 +325,26 @@ def test_mode_3_reconnect_recovery():
 
             if valid:
                 recovery_times_ms.append(dt_ms)
-            time.sleep(0.25)  # Cho heartbeat_task (200ms) dọn dẹp socket cũ xong
+            time.sleep(0.25)  # Allow heartbeat_task (200ms) to clean up old socket state
 
         if recovery_times_ms:
             avg_ms = sum(recovery_times_ms) / len(recovery_times_ms)
-            print(f"=> Thanh cong {len(recovery_times_ms)}/{trials} lan thu:")
-            print(f"   Nho nhat (Min): {min(recovery_times_ms):.2f} ms | "
-                  f"Trung binh (TB): {avg_ms:.2f} ms | "
-                  f"Lon nhat (Max): {max(recovery_times_ms):.2f} ms")
+            print(f"=> Success {len(recovery_times_ms)}/{trials} trials:")
+            print(f"   Min: {min(recovery_times_ms):.2f} ms | "
+                  f"Avg: {avg_ms:.2f} ms | "
+                  f"Max: {max(recovery_times_ms):.2f} ms")
     finally:
         sock_b.close()
 
 
 def test_mode_4_frame_loss_comparison():
-    print("\n--- [MODE 4] SO SANH IV THEO KHUNG VS IV THEO PHIEN KHI MAT GOI 5% - 50% ---")
+    print("\n--- [MODE 4] COMPARISON: PER-FRAME IV VS SESSION-CHAINED IV UNDER 5% - 50% LOSS ---")
     total_frames = 100
     loss_rates = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
     rng = random.Random(2026)
 
-    # Thu thập 100 khung thực tế được mã hóa từ phần cứng STM32
-    print("Dang thu thap 100 khung ma hoa thuc te tu phan cung STM32...")
+    # Collect 100 empirical frames encrypted by STM32 hardware
+    print("Collecting 100 actual encrypted frames from STM32 hardware...")
     sock_a, sock_b = open_tcp_pair()
     captured_plain = []
     captured_per_frame_cipher = []
@@ -359,7 +359,7 @@ def test_mode_4_frame_loss_comparison():
         sock_a.close()
         sock_b.close()
 
-    # Tạo luồng bản mã tương đương theo chế độ "IV nối chuỗi theo phiên" để đối chiếu
+    # Generate equivalent ciphertext stream using 'session-chained IV' mode for comparison
     session_iv = b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10"
     session_cipher_blocks = []
     chained_iv = session_iv
@@ -367,9 +367,9 @@ def test_mode_4_frame_loss_comparison():
         padded = pt + (b"\x10" * 16)
         enc = AES.new(KEY_A_TO_B, AES.MODE_CBC, iv=chained_iv).encrypt(padded)
         session_cipher_blocks.append(enc)
-        chained_iv = enc[-16:]  # Khối bản mã cuối làm IV cho khung kế tiếp
+        chained_iv = enc[-16:]  # Last ciphertext block acts as IV for next frame
 
-    print("\nTy le mat (%) | IV theo khung: Loi giai ma | IV theo phien: Loi giai ma")
+    print("\nLoss Rate (%) | Per-Frame IV: Decrypt Errors | Session-Chained IV: Decrypt Errors")
     print("-" * 72)
     for rate in loss_rates:
         per_frame_errors = 0
@@ -379,10 +379,10 @@ def test_mode_4_frame_loss_comparison():
         for idx in range(total_frames):
             is_dropped = (rng.random() < rate)
             if is_dropped:
-                # Khung bị mất trên đường truyền -> bên nhận không nhận được
+                # Frame dropped on link -> receiver does not receive it
                 continue
 
-            # 1. Giải mã bằng IV theo từng khung (từ STM32)
+            # 1. Decrypt using per-frame IV (from STM32)
             try:
                 pt_dec = decrypt_gateway_frame(captured_per_frame_cipher[idx], KEY_A_TO_B)
                 valid, _, _ = verify_and_extract_payload(pt_dec)
@@ -391,7 +391,7 @@ def test_mode_4_frame_loss_comparison():
             except Exception:
                 per_frame_errors += 1
 
-            # 2. Giải mã bằng IV nối chuỗi theo phiên
+            # 2. Decrypt using session-chained IV
             enc_blk = session_cipher_blocks[idx]
             dec_sess = AES.new(KEY_A_TO_B, AES.MODE_CBC, iv=rx_chained_iv).decrypt(enc_blk)
             rx_chained_iv = enc_blk[-16:]
@@ -411,12 +411,12 @@ def main():
         print("\n============================================================")
         print("  SECURE GATEWAY TEST SUITE (STM32F103 + W5500 + AES-128)")
         print("============================================================")
-        print("  1. Kiem thu giai ma E2E hai chieu (TCP & UDP)")
-        print("  2. Do thong luong TCP & UDP (512B @ 50 goi/giay)")
-        print("  3. Do thoi gian khoi phuc ket noi TCP (Socket du phong)")
-        print("  4. Mo phong mat khung 5%-50%: IV theo khung vs IV theo phien")
-        print("  0. Thoat")
-        choice = input("Nhap lua chon cua ban (0-4): ").strip()
+        print("  1. Bidirectional E2E Decryption Test (TCP & UDP)")
+        print("  2. Measure Throughput TCP & UDP (512B @ 50 pps)")
+        print("  3. Measure TCP Reconnection Recovery Time (Backup Socket)")
+        print("  4. Simulate Frame Loss 5%-50%: Per-Frame IV vs Session-Chained IV")
+        print("  0. Exit")
+        choice = input("Enter your choice (0-4): ").strip()
 
         if choice == "1":
             test_mode_1_e2e_bidirectional()
@@ -427,10 +427,10 @@ def main():
         elif choice == "4":
             test_mode_4_frame_loss_comparison()
         elif choice == "0":
-            print("Ket thuc kiem thu.")
+            print("Test suite terminated.")
             break
         else:
-            print("Lua chon khong hop le, vui long nhap 0, 1, 2, 3 hoac 4.")
+            print("Invalid choice, please enter 0, 1, 2, 3, or 4.")
 
 
 if __name__ == "__main__":

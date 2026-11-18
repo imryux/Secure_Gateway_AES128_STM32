@@ -35,6 +35,10 @@ static const proto_socket_cfg_t s_socket_table[PROTO_SOCKETS_PER_CHIP] =
 static volatile uint32_t s_exti_irq_count[BSP_W5500_COUNT] = {0U, 0U};
 static uint8_t s_rx_test_buf[NET_SERVICE_TEST_BUF_SIZE];
 
+/**
+ * @brief  EXTI interrupt callback triggered by W5500 INTn line assertion.
+ * @param  chip_id Identifier of the W5500 generating the interrupt.
+ */
 static void net_service_on_w5500_exti_isr(bsp_w5500_id_t chip_id)
 {
     if (chip_id < BSP_W5500_COUNT)
@@ -43,6 +47,11 @@ static void net_service_on_w5500_exti_isr(bsp_w5500_id_t chip_id)
     }
 }
 
+/**
+ * @brief  Ensure a socket is in the expected state (LISTEN for TCP, OPEN for UDP).
+ *         Re-opens or resets closed or disconnected sockets.
+ * @param  p_cfg Pointer to socket configuration descriptor.
+ */
 static void net_service_ensure_socket_open(const proto_socket_cfg_t *p_cfg)
 {
     const uint8_t sn = p_cfg->socket_num;

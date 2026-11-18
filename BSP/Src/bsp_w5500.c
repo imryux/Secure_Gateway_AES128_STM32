@@ -184,6 +184,10 @@ app_status_t bsp_w5500_lock(
     return APP_STATUS_OK;
 }
 
+/**
+ * @brief  Get the currently active W5500 chip ID (under lock).
+ * @return Active chip identifier (BSP_W5500_ID_A or BSP_W5500_ID_B).
+ */
 bsp_w5500_id_t bsp_w5500_get_active_chip(void)
 {
     return s_active_chip;

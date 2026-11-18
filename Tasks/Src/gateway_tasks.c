@@ -90,6 +90,12 @@ static void gateway_on_w5500_exti_from_isr(bsp_w5500_id_t chip_id)
     }
 }
 
+/**
+ * @brief  Enqueue an allocated RX buffer slot into the processing queue.
+ * @param  slot_idx Allocated slot index (0..APP_STATIC_BUFFER_COUNT - 1).
+ * @return APP_STATUS_OK on success, APP_STATUS_NOT_READY if queue is uninitialized,
+ *         or APP_STATUS_BUSY if the queue is full.
+ */
 static app_status_t gateway_enqueue_rx_slot(uint8_t slot_idx)
 {
     if (s_rx_queue_handle == NULL)
