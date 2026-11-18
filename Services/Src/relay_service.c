@@ -206,11 +206,14 @@ app_status_t relay_service_poll_rx(
 
         relay_maintain_socket_state(p_cfg);
 
-        /* Clear hardware interrupt flags so W5500 INTn can assert on subsequent events */
+        /* Clear ONLY receive and connection interrupt flags.
+         * NEVER clear Sn_IR_SENDOK or Sn_IR_TIMEOUT here, because send() and sendto()
+         * in ioLibrary rely on those flags to detect transmission completion and timeout! */
         const uint8_t ir_flags = getSn_IR(sn);
-        if (ir_flags != 0U)
+        const uint8_t rx_ir_flags = ir_flags & (uint8_t)(Sn_IR_RECV | Sn_IR_CON | Sn_IR_DISCON);
+        if (rx_ir_flags != 0U)
         {
-            setSn_IR(sn, ir_flags);
+            setSn_IR(sn, rx_ir_flags);
         }
 
         uint16_t rx_avail = getSn_RX_RSR(sn);
@@ -384,19 +387,50 @@ app_status_t relay_service_transmit_slot(uint8_t slot_idx)
 
         if (target_sn < PROTO_SOCKETS_PER_CHIP)
         {
-            sent_bytes = send(target_sn, p_slot->data, (uint16_t)p_slot->length);
+            /* If socket is temporarily busy completing previous transmission, retry with brief delays */
+            const TickType_t start_tick = xTaskGetTickCount();
+            const TickType_t max_wait_ticks = pdMS_TO_TICKS(100U);
+            while ((xTaskGetTickCount() - start_tick) <= max_wait_ticks)
+            {
+                sent_bytes = send(target_sn, p_slot->data, (uint16_t)p_slot->length);
+                if (sent_bytes != SOCK_BUSY)
+                {
+                    break;
+                }
+                bsp_w5500_unlock();
+                vTaskDelay(pdMS_TO_TICKS(1));
+                if (bsp_w5500_lock(dst_chip, RELAY_WIZ_LOCK_TIMEOUT_MS) != APP_STATUS_OK)
+                {
+                    return APP_STATUS_BUSY;
+                }
+            }
         }
     }
     else
     {
         if (getSn_SR(PROTO_SOCKET_UDP) == SOCK_UDP)
         {
-            sent_bytes = sendto(
-                PROTO_SOCKET_UDP,
-                p_slot->data,
-                (uint16_t)p_slot->length,
-                s_udp_peer_ip[dst_chip],
-                s_udp_peer_port[dst_chip]);
+            const TickType_t start_tick = xTaskGetTickCount();
+            const TickType_t max_wait_ticks = pdMS_TO_TICKS(100U);
+            while ((xTaskGetTickCount() - start_tick) <= max_wait_ticks)
+            {
+                sent_bytes = sendto(
+                    PROTO_SOCKET_UDP,
+                    p_slot->data,
+                    (uint16_t)p_slot->length,
+                    s_udp_peer_ip[dst_chip],
+                    s_udp_peer_port[dst_chip]);
+                if (sent_bytes != SOCK_BUSY)
+                {
+                    break;
+                }
+                bsp_w5500_unlock();
+                vTaskDelay(pdMS_TO_TICKS(1));
+                if (bsp_w5500_lock(dst_chip, RELAY_WIZ_LOCK_TIMEOUT_MS) != APP_STATUS_OK)
+                {
+                    return APP_STATUS_BUSY;
+                }
+            }
         }
     }
 

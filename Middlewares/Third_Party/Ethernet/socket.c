@@ -54,14 +54,17 @@
 //
 //*****************************************************************************
 #include "socket.h"
+#include "bsp_w5500.h"
 
 //M20150401 : Typing Error
 //#define SOCK_ANY_PORT_NUM  0xC000;
 #define SOCK_ANY_PORT_NUM  0xC000
 
 static uint16_t sock_any_port = SOCK_ANY_PORT_NUM;
-static uint16_t sock_io_mode = 0;
-static uint16_t sock_is_sending = 0;
+static uint16_t s_sock_io_mode[BSP_W5500_COUNT] = {0, 0};
+static uint16_t s_sock_is_sending[BSP_W5500_COUNT] = {0, 0};
+#define sock_io_mode      (s_sock_io_mode[bsp_w5500_get_active_chip()])
+#define sock_is_sending   (s_sock_is_sending[bsp_w5500_get_active_chip()])
 
 static uint16_t sock_remained_size[_WIZCHIP_SOCK_NUM_] = {0, 0,};
 
@@ -692,11 +695,11 @@ int32_t recv(uint8_t sn, uint8_t * buf, uint16_t len) { //lihan
                 return SOCK_BUSY;
             }
 #else
-            if (sock_io_mode & (1 << sn)) {
-                return SOCK_BUSY;
-            }
             if (recvsize != 0) {
                 break;
+            }
+            if (sock_io_mode & (1 << sn)) {
+                return SOCK_BUSY;
             }
 #endif
         };
